@@ -9,7 +9,7 @@ from physics.physics_engine import VehicleSpec
 from envs.rl_environment import RacingEnv
 
 
-def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, timesteps: int = 200_000):
+def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, timesteps: int = 500_000):
     track = load_track_json(track_path)
     with open(vehicle_cfg_path, "r", encoding="utf-8") as f:
         veh_cfg = json.load(f)
@@ -18,22 +18,38 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, time
     def make_env():
         return RacingEnv(track, spec)
     
-    # Train model
+    # Extended training with checkpoint system and detailed logging
+    print("=" * 60)
+    print("TRAJECTORY OPTIMIZATION - EXTENDED TRAINING")
+    print("=" * 60)
+    print(f"Training timesteps: {timesteps:,}")
+    print(f"Track points: {len(track.centerline)}")
+    print(f"Track width: {track.width}m")
+    print(f"Checkpoints: 4 (every {len(track.centerline)//4} track points)")
+    print(f"Vehicle wheelbase: {spec.wheelbase}m, track width: {spec.track_width}m")
+    print("PROGRESSIVE TRAINING:")
+    print("  Episodes 0-500: LEARNING phase (only terminate if ALL wheels leave track)")
+    print("  Episodes 500-1000: INTERMEDIATE phase (terminate if 0 wheels inside)")  
+    print("  Episodes 1000+: STRICT phase (≥2 wheels must stay inside track)")
+    print("Rewards: +200 per checkpoint, +5 on-track, +500 lap completion")
+    print("Logging: Stats every 100 episodes, phase transitions, detailed events")
+    print("=" * 60)
+    
     env = DummyVecEnv([make_env])
     model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=None)
     model.learn(total_timesteps=timesteps)
 
 
     # Rollout best trajectory (greedy eval)
-    obs, _ = env.reset()
+    obs = env.reset()
     done = False
     xs, ys, vs = [], [], []
     while not done:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, term, trunc, info = env.step(action)
+        obs, reward, done, info = env.step(action)
         s = env.envs[0].state
         xs.append(s.x); ys.append(s.y); vs.append(np.hypot(s.vx, s.vy))
-        done = bool(term or trunc)
+        done = bool(done[0])  # Extract boolean from array
     
     traj = np.stack([np.array(xs), np.array(ys), np.array(vs)], axis=1)
     np.save(out_path, traj)

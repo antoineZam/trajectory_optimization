@@ -55,7 +55,7 @@ def main():
     p_opt.add_argument("--track", default="data/tracks/sample_track.json")
     p_opt.add_argument("--vehicle", default="configs/vehicle_spec.example.json")
     p_opt.add_argument("--output", default="data/optimal_traj.npy")
-    p_opt.add_argument("--timesteps", type=int, default=50_000)
+    p_opt.add_argument("--timesteps", type=int, default=300_000)
 
 
     p_sim = sub.add_parser("simulate")

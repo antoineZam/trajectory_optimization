@@ -18,6 +18,9 @@ class VehicleSpec:
     Cz_front: float
     Cz_rear: float
     mass_split_front: float # 0..1
+    # Vehicle dimensions for track boundary checking
+    wheelbase: float # distance between front and rear axles (m)
+    track_width: float # distance between left and right wheels (m)
     # Powertrain
     torque_curve: np.ndarray # shape (M, 2): RPM, Torque(Nm)    
     rpm_limiter: float
@@ -46,6 +49,9 @@ class VehicleSpec:
             Cz_front=float(ch["coefficient_portance"]["front"]),
             Cz_rear=float(ch["coefficient_portance"]["rear"]),
             mass_split_front=float(ch["repartition_masses"]["front"]),
+            # Vehicle dimensions with defaults for racing car
+            wheelbase=float(ch.get("empattement", 2.65)),  # Default wheelbase ~2.65m
+            track_width=float(ch.get("voie", 1.55)),       # Default track width ~1.55m  
             torque_curve=np.array(pw["courbe_couple_moteur"], dtype=float),
             rpm_limiter=float(pw["limiteur_rpm"]),
             gear_ratios=np.array(pw["rapports_boite_de_vitesse"], dtype=float),
@@ -166,4 +172,55 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     elif rpm < downshift_rpm and gear > 1:
         new_gear -= 1
 
+    # Safety checks to prevent extreme values
+    x = np.clip(x, -1e6, 1e6)
+    y = np.clip(y, -1e6, 1e6)
+    vx = np.clip(vx, -200.0, 200.0)  # Limit speed to 200 m/s (720 km/h)
+    vy = np.clip(vy, -200.0, 200.0)
+    yaw_rate = np.clip(yaw_rate, -20.0, 20.0)  # Limit angular velocity
+    yaw = np.arctan2(np.sin(yaw), np.cos(yaw))  # Normalize angle
+    rpm = np.clip(rpm, 500.0, spec.rpm_limiter * 1.1)
+    
+    # Check for NaN/inf values
+    if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(vx) and np.isfinite(vy) and 
+            np.isfinite(yaw) and np.isfinite(yaw_rate) and np.isfinite(rpm)):
+        # Reset to safe values if any NaN/inf detected
+        print("Warning: NaN/inf detected in vehicle state, resetting to safe values")
+        return VehicleState(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2, 1500.0)
+    
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
+
+
+def get_wheel_positions(spec: VehicleSpec, state: VehicleState) -> np.ndarray:
+    """
+    Calculate the positions of all 4 wheels based on vehicle state.
+    Returns array of shape (4, 2) with [x, y] positions for [FL, FR, RL, RR] wheels.
+    """
+    # Vehicle center position
+    cx, cy = state.x, state.y
+    yaw = state.yaw
+    
+    # Half dimensions
+    half_wheelbase = spec.wheelbase / 2.0
+    half_track = spec.track_width / 2.0
+    
+    # Calculate wheel positions in vehicle frame, then transform to global frame
+    cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
+    
+    # Front left wheel
+    fl_x = cx + cos_yaw * half_wheelbase - sin_yaw * half_track
+    fl_y = cy + sin_yaw * half_wheelbase + cos_yaw * half_track
+    
+    # Front right wheel  
+    fr_x = cx + cos_yaw * half_wheelbase + sin_yaw * half_track
+    fr_y = cy + sin_yaw * half_wheelbase - cos_yaw * half_track
+    
+    # Rear left wheel
+    rl_x = cx - cos_yaw * half_wheelbase - sin_yaw * half_track
+    rl_y = cy - sin_yaw * half_wheelbase + cos_yaw * half_track
+    
+    # Rear right wheel
+    rr_x = cx - cos_yaw * half_wheelbase + sin_yaw * half_track
+    rr_y = cy - sin_yaw * half_wheelbase - cos_yaw * half_track
+    
+    return np.array([[fl_x, fl_y], [fr_x, fr_y], [rl_x, rl_y], [rr_x, rr_y]])
