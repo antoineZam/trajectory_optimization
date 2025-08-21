@@ -1,0 +1,35 @@
+{
+  "chassis": {
+    "masse_totale": 1450,
+    "centre_de_gravite": [0.0, 0.0, 0.45],
+    "moment_inertie": [1200.0, 2300.0, 1300.0],
+    "coefficient_trainee": 0.34,
+    "coefficient_portance": { "front": -1.2, "rear": -1.8 },
+    "repartition_masses": { "front": 0.53, "rear": 0.47 }
+  },
+  "powertrain": {
+    "courbe_couple_moteur": [
+      [1000, 180],
+      [2000, 250],
+      [3000, 320],
+      [4000, 380],
+      [5000, 420],
+      [6000, 430],
+      [7000, 420]
+    ],
+    "limiteur_rpm": 7200,
+    "rapports_boite_de_vitesse": [3.6, 2.19, 1.6, 1.29, 1.0, 0.82],
+    "rapport_pont_final": 3.42,
+    "efficacite_transmission": 0.9
+  },
+  "suspension_tires": {
+    "type_suspension": "Double triangulation",
+    "raideur_suspension": { "front": 35000, "rear": 32000 },
+    "geometrie_pneus": { "carrossage": -2.0, "pincement": 0.1 },
+    "modele_pneu_adherence": { "mu0": 1.6, "alpha": 0.0008 }
+  },
+  "brakes": {
+    "couple_freinage_max": 9000,
+    "repartition_freinage": { "front": 0.65, "rear": 0.35 }
+  }
+}

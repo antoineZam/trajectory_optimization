@@ -1,0 +1,21 @@
+numpy
+pandas
+matplotlib
+opencv-python
+shapely
+pyproj
+scipy
+pyyaml
+trimesh
+pyvista
+
+# RL & Gymnasium
+gymnasium
+stable-baselines3
+
+# Deep Learning (PyTorch)
+torch
+torchvision
+
+# Optional utils
+tqdm

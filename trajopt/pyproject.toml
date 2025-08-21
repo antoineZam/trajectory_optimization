@@ -1,0 +1,6 @@
+[project]
+name = "trajopt"
+version = "0.1.0"
+description = "Système avancé de prédiction et d'optimisation de trajectoire"
+requires-python = ">=3.10"
+dependencies = []

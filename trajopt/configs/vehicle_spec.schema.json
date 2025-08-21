@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "chassis": {
+      "type": "object",
+      "properties": {
+        "masse_totale": { "type": "number" },
+        "centre_de_gravite": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "moment_inertie": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "coefficient_trainee": { "type": "number" },
+        "coefficient_portance": {
+          "type": "object",
+          "properties": {
+            "front": { "type": "number" },
+            "rear": { "type": "number" }
+          },
+          "required": ["front", "rear"]
+        },
+        "repartition_masses": {
+          "type": "object",
+          "properties": {
+            "front": { "type": "number" },
+            "rear": { "type": "number" }
+          },
+          "required": ["front", "rear"]
+        }
+      },
+      "required": [
+        "masse_totale",
+        "centre_de_gravite",
+        "moment_inertie",
+        "coefficient_trainee",
+        "coefficient_portance",
+        "repartition_masses"
+      ]
+    },
+    "powertrain": {
+      "type": "object",
+      "properties": {
+        "courbe_couple_moteur": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "limiteur_rpm": { "type": "number" },
+        "rapports_boite_de_vitesse": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "rapport_pont_final": { "type": "number" },
+        "efficacite_transmission": { "type": "number" }
+      },
+      "required": [
+        "courbe_couple_moteur",
+        "limiteur_rpm",
+        "rapports_boite_de_vitesse",
+        "rapport_pont_final",
+        "efficacite_transmission"
+      ]
+    },
+    "suspension_tires": {
+      "type": "object",
+      "properties": {
+        "type_suspension": { "type": "string" },
+        "raideur_suspension": {
+          "type": "object",
+          "properties": {
+            "front": { "type": "number" },
+            "rear": { "type": "number" }
+          },
+          "required": ["front", "rear"]
+        },
+        "geometrie_pneus": {
+          "type": "object",
+          "properties": {
+            "carrossage": { "type": "number" },
+            "pincement": { "type": "number" }
+          },
+          "required": ["carrossage", "pincement"]
+        },
+        "modele_pneu_adherence": {
+          "type": "object",
+          "properties": {
+            "mu0": { "type": "number" },
+            "alpha": { "type": "number" }
+          },
+          "required": ["mu0", "alpha"]
+        }
+      },
+      "required": [
+        "type_suspension",
+        "raideur_suspension",
+        "geometrie_pneus",
+        "modele_pneu_adherence"
+      ]
+    },
+    "brakes": {
+      "type": "object",
+      "properties": {
+        "couple_freinage_max": { "type": "number" },
+        "repartition_freinage": {
+          "type": "object",
+          "properties": {
+            "front": { "type": "number" },
+            "rear": { "type": "number" }
+          },
+          "required": ["front", "rear"]
+        }
+      },
+      "required": ["couple_freinage_max", "repartition_freinage"]
+    }
+  },
+  "required": ["chassis", "powertrain", "suspension_tires", "brakes"]
+}

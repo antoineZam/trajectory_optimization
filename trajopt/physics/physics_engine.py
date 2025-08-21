@@ -1,0 +1,169 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Tuple, Dict
+import numpy as np
+
+
+# -------------------------
+# Données véhicule & utilitaires
+# -------------------------
+
+
+@dataclass
+class VehicleSpec:
+    mass: float
+    cg: np.ndarray # x,y,z (m)
+    moi: np.ndarray # I_x, I_y, I_z (kg*m^2)
+    Cx: float
+    Cz_front: float
+    Cz_rear: float
+    mass_split_front: float # 0..1
+    # Powertrain
+    torque_curve: np.ndarray # shape (M, 2): RPM, Torque(Nm)    
+    rpm_limiter: float
+    gear_ratios: np.ndarray
+    final_drive: float
+    driveline_eff: float # 0..1
+    # Tires & suspension (simplified)
+    k_spring_front: float
+    k_spring_rear: float
+    camber: float
+    toe: float
+    mu0: float # base friction coefficient
+    alpha_muFz: float # mu = mu0 * (1 + alpha*(Fz-Ref)/Ref)
+    # Brakes
+    brake_torque_max: float
+    brake_split_front: float
+
+    @staticmethod
+    def from_config(cfg: Dict) -> "VehicleSpec":
+        ch, pw, st, br = cfg["chassis"], cfg["powertrain"], cfg["suspension_tires"], cfg["brakes"]
+        return VehicleSpec(
+            mass=float(ch["masse_totale"]),
+            cg=np.array(ch["centre_de_gravite"], dtype=float),
+            moi=np.array(ch["moment_inertie"], dtype=float),
+            Cx=float(ch["coefficient_trainee"]),
+            Cz_front=float(ch["coefficient_portance"]["front"]),
+            Cz_rear=float(ch["coefficient_portance"]["rear"]),
+            mass_split_front=float(ch["repartition_masses"]["front"]),
+            torque_curve=np.array(pw["courbe_couple_moteur"], dtype=float),
+            rpm_limiter=float(pw["limiteur_rpm"]),
+            gear_ratios=np.array(pw["rapports_boite_de_vitesse"], dtype=float),
+            final_drive=float(pw["rapport_pont_final"]),
+            driveline_eff=float(pw["efficacite_transmission"]),
+            k_spring_front=float(st["raideur_suspension"]["front"]),
+            k_spring_rear=float(st["raideur_suspension"]["rear"]),
+            camber=float(st["geometrie_pneus"]["carrossage"]),
+            toe=float(st["geometrie_pneus"]["pincement"]),
+            mu0=float(st["modele_pneu_adherence"]["mu0"]),
+            alpha_muFz=float(st["modele_pneu_adherence"]["alpha"]),
+            brake_torque_max=float(br["couple_freinage_max"]),
+            brake_split_front=float(br["repartition_freinage"]["front"]),
+        )
+
+
+# -------------------------
+# Modèle dynamique (bicycle 2D + aéro + transmission simplifiée)
+# -------------------------
+
+
+@dataclass
+class VehicleState:
+    x: float
+    y: float
+    yaw: float
+    vx: float
+    vy: float
+    yaw_rate: float
+    gear: int
+    rpm: float
+
+
+def interp_torque(torque_curve: np.ndarray, rpm: float) -> float:
+    rpm = np.clip(rpm, torque_curve[0,0], torque_curve[-1,0])
+    return float(np.interp(rpm, torque_curve[:,0], torque_curve[:,1]))
+
+
+def aero_forces(spec: VehicleSpec, v: float, rho_air: float = 1.225, area: float = 2.0) -> Tuple[float, float]:
+    """
+    Drag ~ 0.5*rho*Cx*A*v^2 ; Downforce (front+rear) ~ 0.5*rho*Cz*A*v^2
+    """
+    drag = 0.5 * rho_air * spec.Cx * area * v*v
+    downforce = 0.5 * rho_air * (abs(spec.Cz_front) + abs(spec.Cz_rear)) * area * v*v
+    return drag, downforce
+
+
+def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float = 4000.0) -> float:
+    return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
+
+
+def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
+                throttle: float, brake: float, steer: float,
+                wheel_radius: float = 0.33, CdA_area: float = 2.0) -> VehicleState:
+    # Clamp inputs
+    throttle = float(np.clip(throttle, 0.0, 1.0))
+    brake = float(np.clip(brake, 0.0, 1.0))
+    steer = float(np.clip(steer, -0.6, 0.6)) # ~ +/-34 deg
+
+    # Vitesses globale
+    v = np.hypot(s.vx, s.vy)
+
+    # Aéro
+    drag, downforce = aero_forces(spec, v, area=CdA_area)
+
+    # Répartition verticale (statique + aéro) — simplifiée
+    Fz_front = (spec.mass * 9.81 * spec.mass_split_front) + downforce * 0.5
+    Fz_rear = (spec.mass * 9.81 * (1.0 - spec.mass_split_front)) + downforce * 0.5
+
+    # Capacité de friction
+    mu_f = tire_mu(spec, Fz_front)
+    mu_r = tire_mu(spec, Fz_rear)
+    Fy_max_front = mu_f * Fz_front
+    Fy_max_rear = mu_r * Fz_rear
+    
+    # Propulsion : estimate wheel speed from gear
+    gear = int(np.clip(s.gear, 1, len(spec.gear_ratios)))
+    ratio = spec.gear_ratios[gear-1] * spec.final_drive
+    wheel_omega = (s.vx / max(wheel_radius,1e-3)) if v>0.1 else 0.0
+    est_rpm = wheel_omega * ratio * 9.5493 # rad/s -> RPM
+    rpm = np.clip(est_rpm, 800.0, spec.rpm_limiter)
+    eng_torque = interp_torque(spec.torque_curve, rpm) * throttle
+    wheel_torque = eng_torque * ratio * spec.driveline_eff
+    Fx_driven = wheel_torque / max(wheel_radius,1e-3)
+
+    # Freinage
+    brake_torque = brake * spec.brake_torque_max
+    Fx_brake = brake_torque / max(wheel_radius,1e-3)
+    Fx_long = Fx_driven - Fx_brake - np.sign(s.vx) * drag
+
+    # Direction (bicycle) — saturée par Fy_max
+    # Simplification : Fy_front ~ k*steer*vx , saturée ; Fy_rear ~ -C*beta
+    beta = np.arctan2(s.vy, max(s.vx, 1e-3))
+    Cf = Fy_max_front / max(abs(steer)*1.0 + 1e-3, 1.0) # heuristique
+    Cr = Fy_max_rear / max(abs(beta)*5.0 + 1e-3, 1.0)
+    Fy_front = np.clip(steer * Cf, -Fy_max_front, Fy_max_front)
+    Fy_rear = np.clip(-beta * Cr, -Fy_max_rear, Fy_max_rear)
+
+    # Équations de mouvement 2D (plan)
+    ax = (Fx_long - Fy_front * np.sin(steer)) / spec.mass + s.vy * s.yaw_rate
+    ay = (Fy_front * np.cos(steer) + Fy_rear) / spec.mass - s.vx * s.yaw_rate
+    yaw_acc = (Fy_front * 1.2 - Fy_rear * 1.4) / max(spec.moi[2],1e-3) # bras de levier heuristiques
+
+    # Intégration Euler
+    vx = s.vx + dt * ax
+    vy = s.vy + dt * ay
+    yaw_rate = s.yaw_rate + dt * yaw_acc
+    yaw = s.yaw + dt * yaw_rate
+    x = s.x + dt * (s.vx * np.cos(s.yaw) - s.vy * np.sin(s.yaw))
+    y = s.y + dt * (s.vx * np.sin(s.yaw) + s.vy * np.cos(s.yaw))
+
+    # Mise à jour RPM/gear (boîte auto simple)
+    upshift_rpm = 0.92 * spec.rpm_limiter
+    downshift_rpm = 2000.0
+    new_gear = gear
+    if rpm > upshift_rpm and gear < len(spec.gear_ratios):
+        new_gear += 1
+    elif rpm < downshift_rpm and gear > 1:
+        new_gear -= 1
+
+    return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
