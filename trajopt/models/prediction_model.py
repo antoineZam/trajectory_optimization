@@ -33,14 +33,18 @@ class LSTMForecaster(nn.Module):
             else:
                 T = self.cfg.fut_len
                 y = []
+                # Start with a zero tensor as the initial input to the decoder
                 y_t = torch.zeros(B, 1, 2, device=hist.device)
                 h_s, c_s = hT, cT
 
                 for _ in range(T):
                     dec_h, (h_s, c_s) = self.dec(y_t, (h_s, c_s))
+                    # The output of the head is the prediction for the current step
                     dxy = self.head(dec_h)
-                    y_t = torch.cat([y_t, dxy], dim=1)
-                    y.append(y_t)
+                    # The prediction for this step becomes the input for the next step
+                    y_t = dxy
+                    # Collect the predictions
+                    y.append(dxy)
                 y = torch.cat(y, dim=1)
                 return y
     
