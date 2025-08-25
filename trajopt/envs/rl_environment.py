@@ -4,6 +4,7 @@ from gymnasium import spaces
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Tuple
+from scipy.spatial.distance import cdist
 
 from utils.track import Track
 from utils.map_processing import sample_next_centerline_points, speed_along_tangent
@@ -147,14 +148,8 @@ class RacingEnv(gym.Env):
             print()
 
     def _is_point_inside_track(self, point: np.ndarray) -> bool:
-        """Check if a point is inside the track boundaries."""
-        # Find closest track point
-        distances = np.linalg.norm(self.track.centerline - point, axis=1)
-        closest_idx = np.argmin(distances)
-        closest_distance = distances[closest_idx]
-        
-        # Check if within track width (with small safety margin)
-        return closest_distance <= (self.track.width / 2.0 - 0.1)  # 0.1m safety margin
+        """Check if a point is inside the interpolated track boundaries."""
+        return self.track.is_point_inside_track(point)
     
     def _count_wheels_inside_track(self) -> int:
         """Count how many wheels are inside the track boundaries."""
@@ -167,13 +162,13 @@ class RacingEnv(gym.Env):
                 
         return wheels_inside
 
-    def _check_checkpoint(self, track_idx: int) -> bool:
-        """Check if we've reached the next checkpoint in sequence."""
-        track_len = len(self.track.centerline)
-        checkpoint_spacing = track_len // self.num_checkpoints
+    def _check_checkpoint(self, current_progress: float) -> bool:
+        """Check if we've reached the next checkpoint in sequence based on track progress."""
+        checkpoint_spacing = 1.0 / self.num_checkpoints
         
-        # Calculate which checkpoint this track index represents
-        checkpoint_id = track_idx // checkpoint_spacing
+        # Calculate which checkpoint this progress represents
+        checkpoint_id = int(current_progress / checkpoint_spacing)
+        checkpoint_id = min(checkpoint_id, self.num_checkpoints - 1)  # Clamp to valid range
         
         # Only allow hitting checkpoints in order
         if checkpoint_id == self.current_checkpoint:
@@ -203,7 +198,13 @@ class RacingEnv(gym.Env):
         
         # Get next points and normalize relative to current position
         try:
-            nxt = sample_next_centerline_points(self.track.centerline, np.array([s.x, s.y]), k=self.k, lookahead=5.0)
+            # Use interpolated track for smoother lookahead points
+            closest_idx = np.argmin(cdist([np.array([s.x, s.y])], self.track.interpolated_centerline)[0])
+            
+            # Get k points ahead on the interpolated centerline
+            lookahead_indices = [(closest_idx + i*20) % len(self.track.interpolated_centerline) for i in range(1, self.k+1)]
+            nxt = self.track.interpolated_centerline[lookahead_indices]
+            
             # Normalize next points relative to current position
             nxt_rel = nxt - np.array([s.x, s.y])
             nxt_rel = np.clip(nxt_rel, -100.0, 100.0)  # Clip to reasonable bounds
@@ -229,19 +230,18 @@ class RacingEnv(gym.Env):
         # Initialize termination flag
         terminated = False
         
-        # Find closest track point
+        # Get current position and interpolated track progress
         s = self.state
         pos = np.array([s.x, s.y])
-        idx = int(np.argmin(((self.track.centerline - pos)**2).sum(axis=1)))
         
-        # Checkpoint-based progress tracking
-        track_len = len(self.track.centerline)
-        center_dist = np.linalg.norm(self.track.centerline[idx] - pos)
+        # Use interpolated track for smooth progress tracking
+        current_progress = self.track.get_track_progress(pos)
+        center_dist = np.min(cdist([pos], self.track.interpolated_centerline)[0])
         checkpoint_hit = False
         
         # Only allow checkpoint progress if close to track
         if center_dist <= (self.track.width/2 + 2.0):  # Within 2m of track edge
-            checkpoint_hit = self._check_checkpoint(idx)
+            checkpoint_hit = self._check_checkpoint(current_progress)
             
         # Calculate progress based on checkpoints hit
         self.track_progress = len(self.checkpoints_hit) / self.num_checkpoints
@@ -253,10 +253,15 @@ class RacingEnv(gym.Env):
         # Rewards
         reward = 0.0
         
-        # Distance-based reward: stay on track
+        # Distance-based reward with racing line guidance
         if center_dist <= self.track.width/2:
             # On track - good base reward
             reward += 5.0
+            
+            # Additional reward for being close to interpolated centerline (racing line)
+            racing_line_dist = center_dist
+            if racing_line_dist <= 1.0:  # Within 1m of ideal line
+                reward += (1.0 - racing_line_dist) * 3.0  # Up to +3 bonus for perfect line
         elif center_dist <= self.track.width/2 + 1.0:
             # Close to track - small reward
             reward += 1.0
@@ -272,20 +277,24 @@ class RacingEnv(gym.Env):
         # Progress-based rewards for being at correct part of track
         expected_checkpoint = len(self.checkpoints_hit)
         if expected_checkpoint < self.num_checkpoints:
-            # Calculate how close we are to the next checkpoint
-            target_checkpoint_idx = (expected_checkpoint * track_len) // self.num_checkpoints
-            distance_to_checkpoint = abs(idx - target_checkpoint_idx) / track_len
+            # Calculate how close we are to the next checkpoint using smooth progress
+            target_progress = (expected_checkpoint + 0.5) / self.num_checkpoints
+            progress_distance = abs(current_progress - target_progress)
             
             # Reward being close to the next checkpoint
-            if distance_to_checkpoint < 0.1:  # Within 10% of track length
-                reward += 10.0 * (0.1 - distance_to_checkpoint) * 100  # Higher reward when closer
+            if progress_distance < 0.1:  # Within 10% of track progress
+                reward += 10.0 * (0.1 - progress_distance) * 100  # Higher reward when closer
         
         # Speed reward along track direction - only when on track
         if center_dist <= self.track.width/2 + 1.0:
-            nxt = self.track.centerline[(idx+1) % track_len]
-            tangent = nxt - self.track.centerline[idx]
-            vprog = speed_along_tangent(s.vx, s.vy, tangent)
-            reward += np.clip(vprog * 0.1, 0, 2)  # Small speed bonus, capped
+            # Find direction along interpolated track
+            closest_idx = np.argmin(cdist([pos], self.track.interpolated_centerline)[0])
+            next_idx = (closest_idx + 10) % len(self.track.interpolated_centerline)  # Look ahead 10 points
+            
+            tangent = self.track.interpolated_centerline[next_idx] - self.track.interpolated_centerline[closest_idx]
+            if np.linalg.norm(tangent) > 1e-6:
+                vprog = speed_along_tangent(s.vx, s.vy, tangent)
+                reward += np.clip(vprog * 0.1, 0, 2)  # Small speed bonus, capped
         
         # Time penalty to encourage fast completion
         reward += self.cfg.time_penalty
