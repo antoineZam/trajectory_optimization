@@ -9,8 +9,9 @@ from physics.physics_engine import VehicleSpec
 from envs.rl_environment import RacingEnv
 
 
-def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, timesteps: int = 500_000):
-    track = load_track_json(track_path)
+def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, 
+                     timesteps: int = 500_000, interpolation_resolution: int = 2000):
+    track = load_track_json(track_path, interpolation_resolution=interpolation_resolution)
     with open(vehicle_cfg_path, "r", encoding="utf-8") as f:
         veh_cfg = json.load(f)
     spec = VehicleSpec.from_config(veh_cfg)
@@ -23,10 +24,10 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, time
     print("TRAJECTORY OPTIMIZATION - INTERPOLATED TRACK TRAINING")
     print("=" * 60)
     print(f"Training timesteps: {timesteps:,}")
-    print(f"Original track points: {len(track.centerline)}")
-    print(f"Interpolated track points: {track._interpolation_resolution}")
+    print(f"Track points: {len(track.centerline)}")
+    print(f"Interpolated track points: {track.interpolation_resolution}")
     print(f"Track width: {track.width}m")
-    print(f"Checkpoints: 4 (based on smooth progress tracking)")
+    print(f"Checkpoints: 4 (every {len(track.centerline)//4} track points)")
     print(f"Vehicle wheelbase: {spec.wheelbase}m, track width: {spec.track_width}m")
     print("REALISTIC VEHICLE DYNAMICS:")
     print("  - Speed-dependent steering limitations")

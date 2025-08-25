@@ -52,7 +52,7 @@ class RacingEnv(gym.Env):
         self.state = None
         self.step_count = 0
         self.track_progress = 0.0  # Progress around track [0-1]
-        self.last_track_idx = 0   # Last closest track point index
+        self.last_track_progress = 0.0 # For continuous reward
         self.lap_completed = False
         self.max_track_idx_reached = 0  # Furthest point reached on track
         
@@ -89,7 +89,7 @@ class RacingEnv(gym.Env):
         
         self.step_count = 0
         self.track_progress = 0.0
-        self.last_track_idx = 0
+        self.last_track_progress = 0.0
         self.lap_completed = False
         self.max_track_idx_reached = 0
         self.checkpoints_hit = set()
@@ -245,48 +245,18 @@ class RacingEnv(gym.Env):
         if center_dist <= (self.track.width/2 + 2.0):  # Within 2m of track edge
             checkpoint_hit = self._check_checkpoint(current_progress)
             
-        # Calculate progress based on checkpoints hit
-        self.track_progress = len(self.checkpoints_hit) / self.num_checkpoints
-        
-        # Check for lap completion - need ALL checkpoints
-        if len(self.checkpoints_hit) >= self.num_checkpoints and not self.lap_completed:
-            self.lap_completed = True
-        
-        # Rewards
         reward = 0.0
+        # Continuous progress reward
+        progress_diff = current_progress - self.last_track_progress
+        # Handle lap crossing
+        if progress_diff < -0.5:  # Lap completed
+            progress_diff += 1.0
         
-        # Distance-based reward with racing line guidance
-        if center_dist <= self.track.width/2:
-            # On track - good base reward
-            reward += 5.0
+        if progress_diff > 0:
+            reward += progress_diff * self.cfg.progress_reward_scale * 100 # Scale up reward
             
-            # Additional reward for being close to interpolated centerline (racing line)
-            racing_line_dist = center_dist
-            if racing_line_dist <= 1.0:  # Within 1m of ideal line
-                reward += (1.0 - racing_line_dist) * 3.0  # Up to +3 bonus for perfect line
-        elif center_dist <= self.track.width/2 + 1.0:
-            # Close to track - small reward
-            reward += 1.0
-        else:
-            # Off track - penalty
-            reward -= 5.0
-        
-        # MASSIVE checkpoint reward: heavily incentivize reaching new checkpoints
-        if checkpoint_hit:
-            reward += 200.0  # HUGE reward for hitting a new checkpoint in sequence
-            print(f"CHECKPOINT {len(self.checkpoints_hit)-1} HIT! Progress: {len(self.checkpoints_hit)}/{self.num_checkpoints}, step: {self.step_count}")
-            
-        # Progress-based rewards for being at correct part of track
-        expected_checkpoint = len(self.checkpoints_hit)
-        if expected_checkpoint < self.num_checkpoints:
-            # Calculate how close we are to the next checkpoint using smooth progress
-            target_progress = (expected_checkpoint + 0.5) / self.num_checkpoints
-            progress_distance = abs(current_progress - target_progress)
-            
-            # Reward being close to the next checkpoint
-            if progress_distance < 0.1:  # Within 10% of track progress
-                reward += 10.0 * (0.1 - progress_distance) * 100  # Higher reward when closer
-        
+        self.last_track_progress = current_progress
+
         # Speed reward along track direction - only when on track
         if center_dist <= self.track.width/2 + 1.0:
             # Find direction along interpolated track
@@ -304,6 +274,10 @@ class RacingEnv(gym.Env):
         # Lap completion bonus
         if self.lap_completed:
             reward += self.cfg.lap_completion_bonus
+            
+        # Slip angle penalty (encourage smooth driving)
+        slip_penalty = abs(s.vy) * 0.1
+        reward -= slip_penalty
             
         # Stagnation penalty: discourage staying in same area
         if self.step_count > 1000 and len(self.checkpoints_hit) == 0:

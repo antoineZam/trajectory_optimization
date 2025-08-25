@@ -6,6 +6,7 @@ from shapely.geometry import LineString, Polygon
 from shapely.affinity import rotate, translate
 from scipy.interpolate import splprep, splev
 from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
 
 
 @dataclass
@@ -13,11 +14,19 @@ class Track:
     name: str
     centerline: np.ndarray # shape (N, 2)
     width: float # uniform width for simplicity
+    interpolation_resolution: int = 2000  # Default resolution
     # Interpolated track data for smooth boundaries
     _interpolated_centerline: np.ndarray = None
     _interpolated_left: np.ndarray = None
     _interpolated_right: np.ndarray = None
-    _interpolation_resolution: int = 2000  # Points for smooth interpolation
+    # K-D Tree for fast spatial queries
+    _centerline_kdtree: cKDTree = None
+    _left_boundary_kdtree: cKDTree = None
+    _right_boundary_kdtree: cKDTree = None
+
+    def __post_init__(self):
+        # Allow lazy computation of interpolated track
+        pass
 
     @property
     def left_boundary(self) -> np.ndarray:
@@ -52,7 +61,7 @@ class Track:
                            s=0, k=3, per=True)  # s=0 for exact interpolation, k=3 for cubic
             
             # Generate high-resolution interpolated points
-            u_new = np.linspace(0, 1, self._interpolation_resolution, endpoint=False)
+            u_new = np.linspace(0, 1, self.interpolation_resolution, endpoint=False)
             interp_x, interp_y = splev(u_new, tck)
             self._interpolated_centerline = np.column_stack([interp_x, interp_y])
             
@@ -68,6 +77,11 @@ class Track:
             self._interpolated_centerline = self.centerline
             self._interpolated_left = offset_polyline(self.centerline, +self.width/2)
             self._interpolated_right = offset_polyline(self.centerline, -self.width/2)
+        
+        # Build K-D trees for fast lookups
+        self._centerline_kdtree = cKDTree(self._interpolated_centerline)
+        self._left_boundary_kdtree = cKDTree(self._interpolated_left)
+        self._right_boundary_kdtree = cKDTree(self._interpolated_right)
 
     def _offset_interpolated_line(self, line: np.ndarray, offset: float) -> np.ndarray:
         """Create offset boundary from interpolated centerline."""
@@ -93,9 +107,9 @@ class Track:
         if self._interpolated_left is None:
             self._compute_interpolated_track()
             
-        # Compute distances to all boundary points
-        dist_left = np.min(cdist([point], self._interpolated_left)[0])
-        dist_right = np.min(cdist([point], self._interpolated_right)[0])
+        # Query K-D trees for closest distances
+        dist_left, _ = self._left_boundary_kdtree.query(point, k=1)
+        dist_right, _ = self._right_boundary_kdtree.query(point, k=1)
         
         return dist_left, dist_right
 
@@ -104,7 +118,7 @@ class Track:
         dist_left, dist_right = self.get_distance_to_boundaries(point)
         
         # Simple approximation: if closer to centerline than to either boundary
-        dist_center = np.min(cdist([point], self.interpolated_centerline)[0])
+        dist_center, _ = self._centerline_kdtree.query(point, k=1)
         
         # Point is inside if it's reasonable close to centerline and boundaries
         max_reasonable_dist = self.width/2 + 1.0  # Small safety margin
@@ -115,9 +129,8 @@ class Track:
         if self._interpolated_centerline is None:
             self._compute_interpolated_track()
             
-        # Find closest point on interpolated centerline
-        distances = cdist([point], self._interpolated_centerline)[0]
-        closest_idx = np.argmin(distances)
+        # Find closest point on interpolated centerline using K-D Tree
+        _, closest_idx = self._centerline_kdtree.query(point, k=1)
         
         # Progress is the index divided by total points
         return closest_idx / len(self._interpolated_centerline)
@@ -131,11 +144,12 @@ class Track:
 
 
     @staticmethod
-    def from_json(d: dict) -> "Track":
+    def from_json(d: dict, interpolation_resolution: int = 2000) -> "Track":
         return Track(
             name=d["name"],
             width=float(d["width"]),
             centerline=np.array(d["centerline"], dtype=float),
+            interpolation_resolution=interpolation_resolution,
     )
 
 
@@ -156,7 +170,8 @@ def offset_polyline(poly: np.ndarray, offset: float) -> np.ndarray:
 
 
 def make_oval_track(a: float = 120.0, b: float = 70.0, n: int = 600, width: float = 12.0,
-    rotate_deg: float = 0.0, dx: float = 0.0, dy: float = 0.0) -> Track:
+    rotate_deg: float = 0.0, dx: float = 0.0, dy: float = 0.0,
+    interpolation_resolution: int = 2000) -> Track:
     t = np.linspace(0, 2*np.pi, n, endpoint=False)
     x = a * np.cos(t)
     y = b * np.sin(t)
@@ -164,7 +179,8 @@ def make_oval_track(a: float = 120.0, b: float = 70.0, n: int = 600, width: floa
     ls = LineString(center)
     ls = rotate(ls, rotate_deg, origin=(0, 0), use_radians=False)
     ls = translate(ls, dx, dy)
-    return Track(name="oval", centerline=np.array(ls.coords), width=width)
+    return Track(name="oval", centerline=np.array(ls.coords), width=width,
+                 interpolation_resolution=interpolation_resolution)
 
 
 
@@ -176,6 +192,6 @@ def save_track_json(track: Track, path: str) -> None:
 
 
 
-def load_track_json(path: str) -> Track:
+def load_track_json(path: str, interpolation_resolution: int = 2000) -> Track:
     with open(path, "r", encoding="utf-8") as f:
-        return Track.from_json(json.load(f))
+        return Track.from_json(json.load(f), interpolation_resolution=interpolation_resolution)
