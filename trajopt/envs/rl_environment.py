@@ -44,7 +44,9 @@ class RacingEnv(gym.Env):
         obs_low = np.array([-1000.0, -1000.0, -np.pi, -100.0, -100.0, -10.0] + [-100.0]*10)  # 6 + 2*5
         obs_high = np.array([1000.0, 1000.0, np.pi, 100.0, 100.0, 10.0] + [100.0]*10)  # 6 + 2*5
         
-        self.action_space = spaces.Box(low=np.array([0.0, 0.0, -1.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32) # throttle, brake, steer
+        # Action space: [throttle, brake, steer]
+        # Note: steer range is [-1, 1] but actual steering angle is speed-dependent
+        self.action_space = spaces.Box(low=np.array([0.0, 0.0, -1.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32)
         self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
 
         self.state = None

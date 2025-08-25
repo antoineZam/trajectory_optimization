@@ -21,6 +21,10 @@ class VehicleSpec:
     # Vehicle dimensions for track boundary checking
     wheelbase: float # distance between front and rear axles (m)
     track_width: float # distance between left and right wheels (m)
+    # Steering system limitations
+    max_steering_angle: float # maximum physical steering angle (rad)
+    steering_speed_factor: float # how much speed reduces steering (s/m)
+    min_turn_radius: float # minimum turning radius at low speed (m)
     # Powertrain
     torque_curve: np.ndarray # shape (M, 2): RPM, Torque(Nm)    
     rpm_limiter: float
@@ -51,7 +55,11 @@ class VehicleSpec:
             mass_split_front=float(ch["repartition_masses"]["front"]),
             # Vehicle dimensions with defaults for racing car
             wheelbase=float(ch.get("empattement", 2.65)),  # Default wheelbase ~2.65m
-            track_width=float(ch.get("voie", 1.55)),       # Default track width ~1.55m  
+            track_width=float(ch.get("voie", 1.55)),       # Default track width ~1.55m
+            # Steering limitations with realistic defaults
+            max_steering_angle=float(ch.get("angle_braquage_max", 0.6)),      # ~34 degrees max
+            steering_speed_factor=float(ch.get("facteur_vitesse_braquage", 0.02)),  # Reduces steering at speed
+            min_turn_radius=float(ch.get("rayon_braquage_min", 6.0)),         # 6m minimum turn radius
             torque_curve=np.array(pw["courbe_couple_moteur"], dtype=float),
             rpm_limiter=float(pw["limiteur_rpm"]),
             gear_ratios=np.array(pw["rapports_boite_de_vitesse"], dtype=float),
@@ -103,16 +111,69 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float = 4000.0) -> float:
     return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
 
 
+def get_max_steering_angle(spec: VehicleSpec, speed: float) -> float:
+    """
+    Calculate maximum allowed steering angle based on vehicle speed.
+    
+    At low speeds: Full steering angle available
+    At high speeds: Reduced steering to prevent unrealistic sharp turns
+    
+    Args:
+        spec: Vehicle specification with steering limits
+        speed: Current vehicle speed (m/s)
+    
+    Returns:
+        Maximum allowed steering angle (rad)
+    """
+    # Base maximum steering angle (physical limit)
+    max_angle = spec.max_steering_angle
+    
+    # Speed-dependent reduction factor
+    # At 0 m/s: full steering, at higher speeds: progressively less
+    speed_reduction = 1.0 / (1.0 + spec.steering_speed_factor * speed)
+    
+    # Apply minimum turn radius constraint
+    # For a given speed, minimum turn radius constrains maximum steering
+    if speed > 1.0:  # Only apply at reasonable speeds
+        # Using bicycle model: tan(δ) = wheelbase / turn_radius
+        # Therefore: δ_max = atan(wheelbase / min_turn_radius)
+        min_radius_angle = np.arctan(spec.wheelbase / spec.min_turn_radius)
+        
+        # Speed-adjusted minimum radius (tighter turns need lower speeds)
+        speed_adjusted_radius = spec.min_turn_radius * (1.0 + speed * 0.1)  # Radius increases with speed
+        speed_radius_angle = np.arctan(spec.wheelbase / speed_adjusted_radius)
+        
+        # Take the most restrictive limit
+        return min(max_angle * speed_reduction, speed_radius_angle)
+    else:
+        return max_angle * speed_reduction
+
+
 def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
                 throttle: float, brake: float, steer: float,
                 wheel_radius: float = 0.33, CdA_area: float = 2.0) -> VehicleState:
     # Clamp inputs
     throttle = float(np.clip(throttle, 0.0, 1.0))
     brake = float(np.clip(brake, 0.0, 1.0))
-    steer = float(np.clip(steer, -0.6, 0.6)) # ~ +/-34 deg
-
-    # Vitesses globale
+    
+    # Calculate current speed for steering limitations
     v = np.hypot(s.vx, s.vy)
+    
+    # Apply speed-dependent steering limitations
+    max_steer_angle = get_max_steering_angle(spec, v)
+    original_steer = steer
+    steer = float(np.clip(steer, -max_steer_angle, max_steer_angle))
+    
+    # Optional: Log when steering is limited (for debugging)
+    if abs(original_steer) > max_steer_angle and v > 5.0:  # Only log at higher speeds
+        if hasattr(step_dynamics, '_last_log_time'):
+            import time
+            current_time = time.time()
+            if current_time - step_dynamics._last_log_time > 5.0:  # Log every 5 seconds max
+                print(f"Steering limited: requested {original_steer:.3f} rad, max allowed {max_steer_angle:.3f} rad at {v:.1f} m/s")
+                step_dynamics._last_log_time = current_time
+        else:
+            step_dynamics._last_log_time = 0
 
     # Aéro
     drag, downforce = aero_forces(spec, v, area=CdA_area)
@@ -189,6 +250,28 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         return VehicleState(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2, 1500.0)
     
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
+
+
+def get_steering_info(spec: VehicleSpec, speed: float) -> dict:
+    """Get detailed steering information for a given speed."""
+    max_angle = get_max_steering_angle(spec, speed)
+    max_angle_deg = np.degrees(max_angle)
+    reduction_factor = max_angle / spec.max_steering_angle
+    
+    # Calculate turn radius at this speed and max steering
+    if abs(max_angle) > 1e-6:
+        turn_radius = spec.wheelbase / np.tan(abs(max_angle))
+    else:
+        turn_radius = float('inf')
+    
+    return {
+        'speed_ms': speed,
+        'speed_kmh': speed * 3.6,
+        'max_steering_angle_rad': max_angle,
+        'max_steering_angle_deg': max_angle_deg,
+        'reduction_factor': reduction_factor,
+        'turn_radius_m': turn_radius
+    }
 
 
 def get_wheel_positions(spec: VehicleSpec, state: VehicleState) -> np.ndarray:

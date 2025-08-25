@@ -28,6 +28,11 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, time
     print(f"Track width: {track.width}m")
     print(f"Checkpoints: 4 (based on smooth progress tracking)")
     print(f"Vehicle wheelbase: {spec.wheelbase}m, track width: {spec.track_width}m")
+    print("REALISTIC VEHICLE DYNAMICS:")
+    print("  - Speed-dependent steering limitations")
+    print(f"  - Max steering angle: {spec.max_steering_angle:.2f} rad ({np.degrees(spec.max_steering_angle):.1f}°)")
+    print(f"  - Minimum turn radius: {spec.min_turn_radius}m")
+    print("  - Steering reduces with speed (realistic physics)")
     print("INTERPOLATED FEATURES:")
     print("  - Smooth spline-based track boundaries")
     print("  - High-resolution progress tracking") 
@@ -38,6 +43,12 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str, time
     print("  Episodes 1000+: STRICT phase (≥2 wheels must stay inside track)")
     print("Rewards: +200 per checkpoint, +5 on-track, +500 lap completion")
     print("Logging: Stats every 100 episodes, phase transitions, detailed events")
+    print("\nSTEERING LIMITATIONS PREVIEW:")
+    from physics.physics_engine import get_steering_info
+    for speed_kmh in [0, 30, 60, 100, 150]:
+        speed_ms = speed_kmh / 3.6
+        info = get_steering_info(spec, speed_ms)
+        print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° (turn radius: {info['turn_radius_m']:4.1f}m)")
     print("=" * 60)
     
     env = DummyVecEnv([make_env])

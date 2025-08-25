@@ -7,7 +7,10 @@
     "coefficient_portance": { "front": -1.2, "rear": -1.8 },
     "repartition_masses": { "front": 0.53, "rear": 0.47 },
     "empattement": 2.65,
-    "voie": 1.55
+    "voie": 1.55,
+    "angle_braquage_max": 0.6,
+    "facteur_vitesse_braquage": 0.02,
+    "rayon_braquage_min": 6.0
   },
   "powertrain": {
     "courbe_couple_moteur": [
