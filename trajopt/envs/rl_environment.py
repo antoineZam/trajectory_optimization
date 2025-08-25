@@ -8,7 +8,7 @@ from scipy.spatial.distance import cdist
 
 from utils.track import Track
 from utils.map_processing import sample_next_centerline_points, speed_along_tangent
-from physics.physics_engine import VehicleSpec, VehicleState, step_dynamics, get_wheel_positions
+from physics.physics_engine import VehicleSpec, VehicleState, step_dynamics, get_wheel_positions, get_max_steering_angle
 
 
 
@@ -21,6 +21,7 @@ class RLConfig:
     progress_reward_scale: float = 1.0
     time_penalty: float = -0.001
     max_steer_rate: float = 0.25
+    steering_saturation_penalty: float = -2.0 # Penalty for hitting steering lock
     lap_completion_bonus: float = 500.0  # MASSIVE bonus for completing a lap
     min_progress_threshold: float = 0.8  # Must complete 80% of track before terminating
     track_violation_penalty: float = -20.0   # Harsh penalty for track limit violations
@@ -72,7 +73,7 @@ class RacingEnv(gym.Env):
         
         # Progressive training: start lenient, gradually get stricter
         self.training_phase = "learning"  # "learning" -> "intermediate" -> "strict"
-        self.phase_episode_threshold = 500  # Switch phases every 500 episodes
+        self.phase_episode_threshold = 10000  # Switch phases every 10000 episodes
 
 
     def reset(self, seed: int | None = None, options: dict | None = None):
@@ -268,6 +269,12 @@ class RacingEnv(gym.Env):
                 vprog = speed_along_tangent(s.vx, s.vy, tangent)
                 reward += np.clip(vprog * 0.1, 0, 2)  # Small speed bonus, capped
         
+        # Steering saturation penalty
+        speed = np.hypot(s.vx, s.vy)
+        max_steer = get_max_steering_angle(self.spec, speed)
+        if abs(steer) > max_steer * 0.99: # If steer command is at or near the limit
+            reward += self.cfg.steering_saturation_penalty
+
         # Time penalty to encourage fast completion
         reward += self.cfg.time_penalty
         
