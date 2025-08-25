@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import numpy as np
 from dataclasses import dataclass
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Polygon, Point
 from shapely.affinity import rotate, translate
 from scipy.interpolate import splprep, splev
 from scipy.spatial.distance import cdist
@@ -23,6 +23,8 @@ class Track:
     _centerline_kdtree: cKDTree = None
     _left_boundary_kdtree: cKDTree = None
     _right_boundary_kdtree: cKDTree = None
+    # Polygon for accurate inside/outside checks
+    _track_polygon: Polygon = None
 
     def __post_init__(self):
         # Allow lazy computation of interpolated track
@@ -82,6 +84,10 @@ class Track:
         self._centerline_kdtree = cKDTree(self._interpolated_centerline)
         self._left_boundary_kdtree = cKDTree(self._interpolated_left)
         self._right_boundary_kdtree = cKDTree(self._interpolated_right)
+        
+        # Create a Shapely Polygon for the track for accurate inside/outside checks
+        # The polygon is created from the exterior (left) and interior (right) boundaries
+        self._track_polygon = Polygon(np.vstack([self._interpolated_left, self._interpolated_right[::-1]]))
 
     def _offset_interpolated_line(self, line: np.ndarray, offset: float) -> np.ndarray:
         """Create offset boundary from interpolated centerline."""
@@ -114,15 +120,10 @@ class Track:
         return dist_left, dist_right
 
     def is_point_inside_track(self, point: np.ndarray) -> bool:
-        """Check if point is inside interpolated track boundaries."""
-        dist_left, dist_right = self.get_distance_to_boundaries(point)
-        
-        # Simple approximation: if closer to centerline than to either boundary
-        dist_center, _ = self._centerline_kdtree.query(point, k=1)
-        
-        # Point is inside if it's reasonable close to centerline and boundaries
-        max_reasonable_dist = self.width/2 + 1.0  # Small safety margin
-        return dist_center <= max_reasonable_dist
+        """Check if point is inside interpolated track boundaries using a robust polygon check."""
+        if self._track_polygon is None:
+            self._compute_interpolated_track()
+        return self._track_polygon.contains(Point(point))
 
     def get_track_progress(self, point: np.ndarray) -> float:
         """Get progress around track (0-1) based on closest point on interpolated centerline."""
