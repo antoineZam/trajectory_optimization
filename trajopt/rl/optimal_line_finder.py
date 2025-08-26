@@ -3,6 +3,7 @@ import json
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+import torch.nn as nn
 
 from utils.track import load_track_json
 from physics.physics_engine import VehicleSpec
@@ -78,7 +79,29 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str,
     print("=" * 60)
     
     env = DummyVecEnv([make_env])
-    model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=None)
+    
+    # Custom hyperparameters for better performance
+    policy_kwargs = dict(
+        activation_fn=nn.Tanh,
+        net_arch=dict(pi=[128, 128, 64], vf=[128, 128, 64]) # Deeper network
+    )
+
+    model = PPO(
+        "MlpPolicy", 
+        env, 
+        policy_kwargs=policy_kwargs,
+        learning_rate=1e-4,       # Smaller learning rate for stability
+        n_steps=2048,             # More steps before updating
+        batch_size=64,            # Standard batch size
+        n_epochs=10,              # More epochs per update
+        gamma=0.99,               # Standard discount factor
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.001,           # Encourage exploration
+        verbose=1, 
+        tensorboard_log=None
+    )
+
     model.learn(total_timesteps=timesteps)
 
     # Final telemetry export
