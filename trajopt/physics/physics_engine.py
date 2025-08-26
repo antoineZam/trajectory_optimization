@@ -102,8 +102,8 @@ def aero_forces(spec: VehicleSpec, v: float, rho_air: float = 1.225, area: float
     """
     Drag ~ 0.5*rho*Cx*A*v^2 ; Downforce (front+rear) ~ 0.5*rho*Cz*A*v^2
     """
-    drag = 0.5 * rho_air * spec.Cx * area * v*v
-    downforce = 0.5 * rho_air * (abs(spec.Cz_front) + abs(spec.Cz_rear)) * area * v*v
+    drag = 0.5 * rho_air * spec.Cx * area * v**2
+    downforce = 0.5 * rho_air * (abs(spec.Cz_front) + abs(spec.Cz_rear)) * area * v**2
     return drag, downforce
 
 
@@ -132,21 +132,20 @@ def get_max_steering_angle(spec: VehicleSpec, speed: float) -> float:
     # At 0 m/s: full steering, at higher speeds: progressively less
     speed_reduction = 1.0 / (1.0 + spec.steering_speed_factor * speed)
     
-    # Apply minimum turn radius constraint
-    # For a given speed, minimum turn radius constrains maximum steering
-    if speed > 1.0:  # Only apply at reasonable speeds
+    # Apply minimum turn radius constraint ONLY at higher speeds
+    # Allow more aggressive steering at low speeds for learning
+    if speed > 5.0:  # Only apply radius constraints above 18 km/h
         # Using bicycle model: tan(δ) = wheelbase / turn_radius
-        # Therefore: δ_max = atan(wheelbase / min_turn_radius)
-        min_radius_angle = np.arctan(spec.wheelbase / spec.min_turn_radius)
-        
-        # Speed-adjusted minimum radius (tighter turns need lower speeds)
-        speed_adjusted_radius = spec.min_turn_radius * (1.0 + speed * 0.1)  # Radius increases with speed
+        # Speed-adjusted minimum radius (much less aggressive)
+        speed_adjusted_radius = spec.min_turn_radius * (1.0 + (speed - 5.0) * 0.05)  # Gentler increase
         speed_radius_angle = np.arctan(spec.wheelbase / speed_adjusted_radius)
         
         # Take the most restrictive limit
         return min(max_angle * speed_reduction, speed_radius_angle)
     else:
-        return max_angle * speed_reduction
+        # At low speeds, allow near-full steering for learning
+        low_speed_factor = max(0.8, speed / 5.0)  # Minimum 80% of max steering
+        return max_angle * speed_reduction * low_speed_factor
 
 
 def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
@@ -159,21 +158,13 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # Calculate current speed for steering limitations
     v = np.hypot(s.vx, s.vy)
     
-    # Apply speed-dependent steering limitations
+    # Apply realistic speed-dependent steering limitations
     max_steer_angle = get_max_steering_angle(spec, v)
-    original_steer = steer
+    steer_before = steer
     steer = float(np.clip(steer, -max_steer_angle, max_steer_angle))
     
-    # Optional: Log when steering is limited (for debugging)
-    if abs(original_steer) > max_steer_angle and v > 5.0:  # Only log at higher speeds
-        if hasattr(step_dynamics, '_last_log_time'):
-            import time
-            current_time = time.time()
-            if current_time - step_dynamics._last_log_time > 5.0:  # Log every 5 seconds max
-                print(f"Steering limited: requested {original_steer:.3f} rad, max allowed {max_steer_angle:.3f} rad at {v:.1f} m/s")
-                step_dynamics._last_log_time = current_time
-        else:
-            step_dynamics._last_log_time = 0
+    # Physics debug disabled - using telemetry system for comprehensive monitoring
+    # (Debug code removed to reduce console noise)
 
     # Aéro
     drag, downforce = aero_forces(spec, v, area=CdA_area)

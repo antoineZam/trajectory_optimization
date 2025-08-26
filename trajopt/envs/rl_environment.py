@@ -9,6 +9,8 @@ from scipy.spatial.distance import cdist
 from utils.track import Track
 from utils.map_processing import sample_next_centerline_points, speed_along_tangent
 from physics.physics_engine import VehicleSpec, VehicleState, step_dynamics, get_wheel_positions, get_max_steering_angle
+from utils.telemetry import RacingTelemetry, TelemetryFrame
+import time
 
 
 
@@ -21,7 +23,7 @@ class RLConfig:
     progress_reward_scale: float = 1.0
     time_penalty: float = -0.001
     max_steer_rate: float = 0.25
-    steering_saturation_penalty: float = -2.0 # Penalty for hitting steering lock
+
     lap_completion_bonus: float = 500.0  # MASSIVE bonus for completing a lap
     min_progress_threshold: float = 0.8  # Must complete 80% of track before terminating
     track_violation_penalty: float = -20.0   # Harsh penalty for track limit violations
@@ -31,11 +33,14 @@ class RLConfig:
 class RacingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 20}
     
-    def __init__(self, track: Track, veh_spec: VehicleSpec, cfg: RLConfig | None = None):
+    def __init__(self, track: Track, veh_spec: VehicleSpec, cfg: RLConfig | None = None, enable_telemetry: bool = True):
         super().__init__()
         self.track = track
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
+
+        # Initialize telemetry system
+        self.telemetry = RacingTelemetry() if enable_telemetry else None
 
         # Observation: [norm_x, norm_y, yaw, vx, vy, yaw_rate] + next 5 relative points (x,y)
         self.k = 5
@@ -45,8 +50,9 @@ class RacingEnv(gym.Env):
         obs_low = np.array([-1000.0, -1000.0, -np.pi, -100.0, -100.0, -10.0] + [-100.0]*10)  # 6 + 2*5
         obs_high = np.array([1000.0, 1000.0, np.pi, 100.0, 100.0, 10.0] + [100.0]*10)  # 6 + 2*5
         
-        # Action space: [throttle, brake, steer]
-        # Note: steer range is [-1, 1] but actual steering angle is speed-dependent
+        # Action space: [throttle, brake, steer_command]
+        # steer_command ∈ [-1, 1] maps to [-max_steering_angle, +max_steering_angle]
+        # Physics engine applies additional speed-dependent limitations
         self.action_space = spaces.Box(low=np.array([0.0, 0.0, -1.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32)
         self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
 
@@ -73,7 +79,7 @@ class RacingEnv(gym.Env):
         
         # Progressive training: start lenient, gradually get stricter
         self.training_phase = "learning"  # "learning" -> "intermediate" -> "strict"
-        self.phase_episode_threshold = 10000  # Switch phases every 10000 episodes
+        self.phase_episode_threshold = 500  # Switch phases every 500 episodes
 
 
     def reset(self, seed: int | None = None, options: dict | None = None):
@@ -87,6 +93,9 @@ class RacingEnv(gym.Env):
         
         if self.termination_stats["total_episodes"] % 100 == 0:
             self._print_termination_stats()
+            # Save telemetry data every 100 episodes
+            if self.telemetry:
+                self.telemetry.save_summaries()
         
         self.step_count = 0
         self.track_progress = 0.0
@@ -95,8 +104,14 @@ class RacingEnv(gym.Env):
         self.max_track_idx_reached = 0
         self.checkpoints_hit = set()
         self.current_checkpoint = 0
+        self.last_steer_command = 0.0  # Initialize steering tracking for smooth steering reward
         x0, y0 = self.track.centerline[0]
         self.state = VehicleState(x=x0, y=y0, yaw=0.0, vx=3.0, vy=0.0, yaw_rate=0.0, gear=2, rpm=1500.0)
+        
+        # Start telemetry for new episode
+        if self.telemetry:
+            self.telemetry.start_episode(self.termination_stats["total_episodes"])
+        
         return self._get_obs(), {}
 
     def _print_termination_stats(self):
@@ -226,8 +241,20 @@ class RacingEnv(gym.Env):
         
         
     def step(self, action: np.ndarray):
-        throttle, brake, steer = float(action[0]), float(action[1]), float(action[2])    
-        self.state = step_dynamics(self.spec, self.state, self.cfg.dt, throttle, brake, steer)
+        throttle, brake, steer_command = float(action[0]), float(action[1]), float(action[2])    
+        
+        # Map agent action [-1, 1] to actual steering angle in radians
+        # This ensures agent commands make physical sense
+        steer_angle = steer_command * self.spec.max_steering_angle  # [-0.6, +0.6] rad max
+        
+        # Debug steering disabled - using telemetry system instead
+        # (Old debug code removed to reduce console noise)
+        
+        # Store control inputs for telemetry
+        control_inputs = (throttle, brake, steer_command, steer_angle)
+        
+        # Physics engine will further limit based on speed
+        self.state = step_dynamics(self.spec, self.state, self.cfg.dt, throttle, brake, steer_angle)
         self.step_count += 1
         
         # Initialize termination flag
@@ -246,47 +273,62 @@ class RacingEnv(gym.Env):
         if center_dist <= (self.track.width/2 + 2.0):  # Within 2m of track edge
             checkpoint_hit = self._check_checkpoint(current_progress)
             
+        # SIMPLIFIED REWARD STRUCTURE
         reward = 0.0
-        # Continuous progress reward
-        progress_diff = current_progress - self.last_track_progress
-        # Handle lap crossing
-        if progress_diff < -0.5:  # Lap completed
-            progress_diff += 1.0
         
-        if progress_diff > 0:
-            reward += progress_diff * self.cfg.progress_reward_scale * 100 # Scale up reward
+        # 1. Core objective: Stay on track
+        if center_dist <= self.track.width/2:
+            reward += 10.0  # Strong reward for being on track
+        elif center_dist <= self.track.width/2 + 1.0:
+            reward += 5.0   # Small reward for being close
+        else:
+            reward -= 10.0  # Penalty for being off track
             
-        self.last_track_progress = current_progress
-
-        # Speed reward along track direction - only when on track
-        if center_dist <= self.track.width/2 + 1.0:
-            # Find direction along interpolated track
-            closest_idx = np.argmin(cdist([pos], self.track.interpolated_centerline)[0])
-            next_idx = (closest_idx + 10) % len(self.track.interpolated_centerline)  # Look ahead 10 points
+        # 2. Progress reward: Use checkpoint system (was working before)
+        if checkpoint_hit:
+            reward += 200.0  # Large bonus for reaching checkpoints
+            print(f"CHECKPOINT {len(self.checkpoints_hit)} HIT! Progress: {len(self.checkpoints_hit)}/{self.num_checkpoints}")
             
-            tangent = self.track.interpolated_centerline[next_idx] - self.track.interpolated_centerline[closest_idx]
-            if np.linalg.norm(tangent) > 1e-6:
-                vprog = speed_along_tangent(s.vx, s.vy, tangent)
-                reward += np.clip(vprog * 0.1, 0, 2)  # Small speed bonus, capped
+        # Calculate progress based on checkpoints hit
+        self.track_progress = len(self.checkpoints_hit) / self.num_checkpoints
         
-        # Steering saturation penalty
-        speed = np.hypot(s.vx, s.vy)
-        max_steer = get_max_steering_angle(self.spec, speed)
-        if abs(steer) > max_steer * 0.99: # If steer command is at or near the limit
-            reward += self.cfg.steering_saturation_penalty
-
-        # Time penalty to encourage fast completion
-        reward += self.cfg.time_penalty
-        
-        # Lap completion bonus
+        # Check for lap completion - need ALL checkpoints
+        if len(self.checkpoints_hit) >= self.num_checkpoints and not self.lap_completed:
+            self.lap_completed = True
+            
+        # 3. Speed bonus: Only when on track
+        if center_dist <= self.track.width/2:
+            speed = np.hypot(s.vx, s.vy)
+            reward += np.clip(speed * 0.1, 0, 5)  # Speed bonus capped at 5
+            
+        # 4. Lap completion
         if self.lap_completed:
             reward += self.cfg.lap_completion_bonus
             
-        # Slip angle penalty (encourage smooth driving)
-        slip_penalty = abs(s.vy) * 0.1
-        reward -= slip_penalty
+        # 5. Racing line reward (encourage following optimal path)
+        if center_dist <= self.track.width/2:  # Only when on track
+            # Distance to interpolated centerline (racing line)
+            racing_line_dist = np.linalg.norm(pos - self.track.interpolated_centerline[
+                np.argmin(np.linalg.norm(self.track.interpolated_centerline - pos, axis=1))
+            ])
+            racing_line_reward = max(0, 3.0 - racing_line_dist)  # +3 for perfect line, 0 for 3m+ off
+            reward += racing_line_reward
+        
+        # 6. Steering extremes penalty (encourage nuanced control)
+        steering_extremes_penalty = abs(steer_command) ** 2 * 2.0  # Quadratic penalty for extreme steering
+        reward -= steering_extremes_penalty
+        
+        # 7. Smooth steering reward (encourage gradual steering changes)
+        if hasattr(self, 'last_steer_command'):
+            steering_change = abs(steer_command - self.last_steer_command)
+            if steering_change > 0.3:  # Penalize jerky steering
+                reward -= steering_change * 3.0
+        self.last_steer_command = steer_command
+        
+        # 8. Time penalty
+        reward += self.cfg.time_penalty
             
-        # Stagnation penalty: discourage staying in same area
+        # 9. Stagnation penalty: discourage staying in same area
         if self.step_count > 1000 and len(self.checkpoints_hit) == 0:
             reward -= 10.0  # Penalty for not hitting any checkpoints after many steps
             
@@ -335,6 +377,90 @@ class RacingEnv(gym.Env):
         else:
             truncated = False
 
+        # Collect telemetry data
+        if self.telemetry:
+            # Calculate additional metrics for telemetry
+            current_speed = np.hypot(self.state.vx, self.state.vy)
+            throttle, brake, steer_command, steer_angle = control_inputs
+            
+            # Get max allowed steering at current speed
+            max_steer_allowed = get_max_steering_angle(self.spec, current_speed)
+            
+            # Calculate racing line distance
+            racing_line_dist = 0.0
+            if center_dist <= self.track.width/2:
+                closest_centerline_point = self.track.interpolated_centerline[
+                    np.argmin(np.linalg.norm(self.track.interpolated_centerline - pos, axis=1))
+                ]
+                racing_line_dist = np.linalg.norm(pos - closest_centerline_point)
+            
+            # Break down reward components for telemetry
+            track_reward = 10.0 if center_dist <= self.track.width/2 else (-10.0 if center_dist > self.track.width/2 + 1.0 else 5.0)
+            checkpoint_reward = 200.0 if checkpoint_hit else 0.0
+            speed_reward = np.clip(current_speed * 0.1, 0, 5) if center_dist <= self.track.width/2 else 0.0
+            racing_line_reward = max(0, 3.0 - racing_line_dist) if center_dist <= self.track.width/2 else 0.0
+            steering_penalty = abs(steer_command) ** 2 * 2.0
+            smooth_steering_penalty = 0.0
+            if hasattr(self, 'last_steer_command'):
+                steering_change = abs(steer_command - self.last_steer_command)
+                if steering_change > 0.3:
+                    smooth_steering_penalty = steering_change * 3.0
+                    
+            frame = TelemetryFrame(
+                timestamp=time.time(),
+                step=self.step_count,
+                # Vehicle state
+                x=self.state.x,
+                y=self.state.y,
+                yaw=self.state.yaw,
+                speed=current_speed,
+                vx=self.state.vx,
+                vy=self.state.vy,
+                yaw_rate=self.state.yaw_rate,
+                # Control inputs
+                throttle=throttle,
+                brake=brake,
+                steer_command=steer_command,
+                steer_angle=steer_angle,
+                max_steer_allowed=max_steer_allowed,
+                # Track information
+                track_progress=current_progress,
+                center_distance=center_dist,
+                racing_line_distance=racing_line_dist,
+                wheels_inside=wheels_inside,
+                current_checkpoint=len(self.checkpoints_hit),
+                # Rewards
+                total_reward=reward,
+                track_reward=track_reward,
+                speed_reward=speed_reward,
+                checkpoint_reward=checkpoint_reward,
+                racing_line_reward=racing_line_reward,
+                steering_penalty=steering_penalty,
+                smooth_steering_penalty=smooth_steering_penalty
+            )
+            
+            self.telemetry.log_frame(frame)
+            
+            # End episode telemetry if terminated
+            if terminated or truncated:
+                # Determine termination reason
+                if self.lap_completed:
+                    termination_reason = "lap_completed"
+                elif truncated:
+                    termination_reason = "max_steps"
+                elif wheels_inside < 2 and self.training_phase == "strict":
+                    termination_reason = "wheel_violation"
+                elif wheels_inside == 0 and self.training_phase == "intermediate":
+                    termination_reason = "wheel_violation"
+                else:
+                    termination_reason = "wheel_violation"
+                    
+                self.telemetry.end_episode(self.lap_completed, termination_reason, self.training_phase)
+                
+                # Print training progress every 100 episodes
+                if self.termination_stats["total_episodes"] % 100 == 0:
+                    self.telemetry.print_training_progress(self.termination_stats["total_episodes"])
+        
         return self._get_obs(), reward, terminated, truncated, {}
 
 

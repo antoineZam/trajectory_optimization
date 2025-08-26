@@ -29,11 +29,27 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str,
     print(f"Track width: {track.width}m")
     print(f"Checkpoints: 4 (every {len(track.centerline)//4} track points)")
     print(f"Vehicle wheelbase: {spec.wheelbase}m, track width: {spec.track_width}m")
+    print("FIXED ACTION SPACE:")
+    print(f"  - Agent steer_command [-1, 1] → steering angle [-{np.degrees(spec.max_steering_angle):.1f}°, +{np.degrees(spec.max_steering_angle):.1f}°]")
+    print("  - No more unrealistic 57° steering commands!")
     print("REALISTIC VEHICLE DYNAMICS:")
-    print("  - Speed-dependent steering limitations")
+    print("  - Speed-dependent steering limitations (agent learns to work within limits)")
     print(f"  - Max steering angle: {spec.max_steering_angle:.2f} rad ({np.degrees(spec.max_steering_angle):.1f}°)")
     print(f"  - Minimum turn radius: {spec.min_turn_radius}m")
-    print("  - Steering reduces with speed (realistic physics)")
+    print("  - Physics engine applies additional speed-based clipping")
+    print("ENHANCED REWARD SYSTEM:")
+    print("  - Stay on track: +10 points")
+    print("  - Checkpoint progress: +200 points") 
+    print("  - Speed bonus: +0-5 points (when on track)")
+    print("  - Racing line following: +0-3 points (distance to centerline)")
+    print("  - Steering extremes penalty: -0-2 points (quadratic)")
+    print("  - Smooth steering: penalty for jerky movements")
+    print("  - Lap completion: +500 points")
+    print("COMPREHENSIVE TELEMETRY:")
+    print("  - Real-time metrics: speed, steering, position, rewards")
+    print("  - Episode summaries: lap times, racing quality, control analysis")
+    print("  - Training progress: completion rates, performance trends")
+    print("  - Data export: JSON/CSV for external analysis")
     print("INTERPOLATED FEATURES:")
     print("  - Smooth spline-based track boundaries")
     print("  - High-resolution progress tracking") 
@@ -42,20 +58,32 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str,
     print("  Episodes 0-500: LEARNING phase (only terminate if ALL wheels leave track)")
     print("  Episodes 500-1000: INTERMEDIATE phase (terminate if 0 wheels inside)")  
     print("  Episodes 1000+: STRICT phase (≥2 wheels must stay inside track)")
-    print("Rewards: +200 per checkpoint, +5 on-track, +500 lap completion")
-    print("Logging: Stats every 100 episodes, phase transitions, detailed events")
-    print("\nSTEERING LIMITATIONS PREVIEW:")
+    print("Logging: Stats every 100 episodes, phase transitions, checkpoint progress")
+    print("\nIMPROVED STEERING LIMITATIONS (More learning-friendly):")
     from physics.physics_engine import get_steering_info
-    for speed_kmh in [0, 30, 60, 100, 150]:
+    for speed_kmh in [0, 15, 30, 60, 100, 150]:
         speed_ms = speed_kmh / 3.6
         info = get_steering_info(spec, speed_ms)
-        print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° (turn radius: {info['turn_radius_m']:4.1f}m)")
+        reduction = info['max_steering_angle_deg'] / np.degrees(spec.max_steering_angle)
+        print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° ({reduction:4.1%} of base) → {info['turn_radius_m']:4.1f}m radius")
+    print("  Low speeds: Near-full steering for learning")
+    print("  High speeds: Realistic physics constraints")
+    print("  Agent learns proper speed-cornering relationship!")
     print("=" * 60)
     
     env = DummyVecEnv([make_env])
     model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=None)
     model.learn(total_timesteps=timesteps)
 
+    # Final telemetry export
+    if hasattr(env.envs[0], 'telemetry') and env.envs[0].telemetry:
+        print("\nTRAINING COMPLETED - Exporting telemetry data...")
+        env.envs[0].telemetry.save_summaries()
+        try:
+            env.envs[0].telemetry.export_csv()
+        except ImportError:
+            print("   Note: Install pandas for CSV export: pip install pandas")
+        print("   Telemetry data saved to ./telemetry/ directory")
 
     # Rollout best trajectory (greedy eval)
     obs = env.reset()

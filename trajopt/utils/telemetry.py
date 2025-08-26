@@ -187,7 +187,7 @@ class RacingTelemetry:
         steer_deg = np.degrees(frame.steer_angle)
         max_steer_deg = np.degrees(frame.max_steer_allowed)
         
-        print(f"\r🏁 LIVE: Step {frame.step:4d} | "
+        print(f"\rLIVE: Step {frame.step:4d} | "
               f"Speed: {speed_kmh:5.1f} km/h | "
               f"Steer: {steer_deg:+5.1f}°/{max_steer_deg:4.1f}° | "
               f"Progress: {frame.track_progress*100:5.1f}% | "
@@ -200,7 +200,7 @@ class RacingTelemetry:
         """Print detailed episode summary."""
         print(f"\n")
         print(f"{'='*80}")
-        print(f"📊 EPISODE {summary.episode} SUMMARY [{summary.training_phase.upper()}]")
+        print(f"EPISODE {summary.episode} SUMMARY [{summary.training_phase.upper()}]")
         print(f"{'='*80}")
         
         # Completion status
@@ -210,14 +210,14 @@ class RacingTelemetry:
         print(f"Progress: {summary.checkpoints_hit}/{summary.max_checkpoints} checkpoints")
         
         # Performance metrics
-        print(f"\n🏎️  PERFORMANCE:")
+        print(f"\nPERFORMANCE:")
         print(f"  Average Speed: {summary.average_speed*3.6:6.1f} km/h")
         print(f"  Max Speed:     {summary.max_speed*3.6:6.1f} km/h") 
         print(f"  Distance:      {summary.total_distance:6.1f} m")
         print(f"  Time on Track: {summary.time_on_track:6.1f}%")
         
         # Racing quality
-        print(f"\n🎯 RACING QUALITY:")
+        print(f"\nRACING QUALITY:")
         print(f"  Avg Center Dist:     {summary.average_center_distance:5.2f} m")
         print(f"  Avg Racing Line Dist: {summary.average_racing_line_distance:5.2f} m")
         print(f"  Steering Smoothness:  {summary.steering_smoothness:5.3f}")
