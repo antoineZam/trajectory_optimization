@@ -10,6 +10,7 @@ from utils.track import Track
 from utils.map_processing import sample_next_centerline_points, speed_along_tangent
 from physics.physics_engine import VehicleSpec, VehicleState, step_dynamics, get_wheel_positions, get_max_steering_angle
 from utils.telemetry import RacingTelemetry, TelemetryFrame
+from utils.curriculum import CurriculumLearning
 import time
 
 
@@ -33,12 +34,17 @@ class RLConfig:
 class RacingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 20}
     
-    def __init__(self, track: Track, veh_spec: VehicleSpec, cfg: RLConfig | None = None, enable_telemetry: bool = True):
+    def __init__(self, track: Track, veh_spec: VehicleSpec, cfg: RLConfig | None = None, 
+                 enable_telemetry: bool = True, enable_curriculum: bool = True):
         super().__init__()
-        self.track = track
+        self.base_track = track  # Store original track
+        self.track = track  # Current track (may be modified by curriculum)
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
-
+        
+        # Initialize curriculum learning system
+        self.curriculum = CurriculumLearning() if enable_curriculum else None
+        
         # Initialize telemetry system
         self.telemetry = RacingTelemetry() if enable_telemetry else None
 
@@ -80,7 +86,132 @@ class RacingEnv(gym.Env):
         # Progressive training: start lenient, gradually get stricter
         self.training_phase = "learning"  # "learning" -> "intermediate" -> "strict"
         self.phase_episode_threshold = 500  # Switch phases every 500 episodes
+        
+        # Update track and parameters based on curriculum
+        self._update_curriculum_settings()
 
+    def _update_curriculum_settings(self):
+        """Update track and episode parameters based on current curriculum stage."""
+        if not self.curriculum:
+            return
+            
+        # Get current curriculum parameters
+        track_params = self.curriculum.get_track_parameters()
+        episode_params = self.curriculum.get_episode_parameters()
+        
+        # Create modified track with wider boundaries
+        self._create_curriculum_track(track_params["width_multiplier"])
+        
+        # Update episode parameters
+        self.cfg.max_steps = episode_params["max_steps"]
+        self._curriculum_termination_mode = episode_params["termination_mode"]
+        self._curriculum_wheels_required = episode_params["wheels_required_inside"]
+        
+    def _create_curriculum_track(self, width_multiplier: float):
+        """Create a modified track with adjusted width for curriculum learning."""
+        if width_multiplier == 1.0:
+            self.track = self.base_track
+            return
+            
+        # Create a new track with modified width
+        new_track = Track(
+            name=f"{self.base_track.name}_curriculum_{width_multiplier:.1f}x",
+            centerline=self.base_track.centerline.copy(),
+            width=self.base_track.width * width_multiplier,
+            interpolation_resolution=self.base_track.interpolation_resolution
+        )
+        self.track = new_track
+        
+    def _get_curriculum_checkpoint_reward(self, base_reward: float) -> float:
+        """Apply curriculum multiplier to checkpoint rewards."""
+        if not self.curriculum:
+            return base_reward
+        reward_params = self.curriculum.get_reward_parameters()
+        return base_reward * reward_params["checkpoint_multiplier"]
+        
+    def _get_curriculum_progress_bonus(self) -> float:
+        """Get curriculum-specific progress bonus."""
+        if not self.curriculum:
+            return 0.0
+        reward_params = self.curriculum.get_reward_parameters()
+        return reward_params["progress_bonus"]
+        
+    def _get_checkpoint_magnetism_reward(self, current_pos: np.ndarray) -> float:
+        """Calculate magnetic attraction reward toward next checkpoint."""
+        # Find next checkpoint to hit
+        next_checkpoint_idx = len(self.checkpoints_hit)
+        if next_checkpoint_idx >= self.num_checkpoints:
+            return 0.0  # All checkpoints hit
+            
+        # Get position of next checkpoint
+        checkpoint_progress = next_checkpoint_idx / self.num_checkpoints
+        checkpoint_idx = int(checkpoint_progress * len(self.track.interpolated_centerline))
+        checkpoint_pos = self.track.interpolated_centerline[checkpoint_idx]
+        
+        # Calculate distance to next checkpoint
+        distance_to_checkpoint = np.linalg.norm(current_pos - checkpoint_pos)
+        
+        # Inverse distance reward - closer is better
+        # Scale to provide meaningful but not overwhelming reward
+        base_magnetism = 2.0 / (1.0 + distance_to_checkpoint * 0.1)  # Max ~2 points
+        
+        # Direction alignment bonus - are we moving toward the checkpoint?
+        if hasattr(self, '_last_pos'):
+            movement_vector = current_pos - self._last_pos
+            to_checkpoint_vector = checkpoint_pos - current_pos
+            
+            # Normalize vectors
+            movement_norm = np.linalg.norm(movement_vector)
+            checkpoint_norm = np.linalg.norm(to_checkpoint_vector)
+            
+            if movement_norm > 0.1 and checkpoint_norm > 0.1:  # Avoid division by zero
+                movement_unit = movement_vector / movement_norm
+                checkpoint_unit = to_checkpoint_vector / checkpoint_norm
+                
+                # Dot product gives alignment (-1 to 1)
+                alignment = np.dot(movement_unit, checkpoint_unit)
+                
+                # Bonus for moving toward checkpoint
+                if alignment > 0:
+                    direction_bonus = alignment * 1.0  # Up to +1 for perfect alignment
+                    base_magnetism += direction_bonus
+        
+        # Store position for next step
+        self._last_pos = current_pos.copy()
+        
+        # Scale based on curriculum stage - stronger magnetism in early stages
+        stage_name = self.curriculum.get_stage_name() if self.curriculum else "racing_pro"
+        magnetism_multipliers = {
+            "driving_school": 2.0,      # Strong guidance in early learning
+            "learners_permit": 1.5,     # Moderate guidance
+            "provisional_license": 1.0, # Normal guidance
+            "full_license": 0.7,        # Reduced guidance
+            "racing_pro": 0.3          # Minimal guidance for advanced racing
+        }
+        
+        multiplier = magnetism_multipliers.get(stage_name, 1.0)
+        
+        return base_magnetism * multiplier
+        
+    def _should_terminate_curriculum(self, wheels_inside: int) -> bool:
+        """Check termination based on curriculum rules."""
+        if not self.curriculum:
+            return wheels_inside < 2  # Default rule
+            
+        mode = self._curriculum_termination_mode
+        required = self._curriculum_wheels_required
+        
+        if mode == "never":
+            return False  # Never terminate for wheel violations
+        elif mode == "soft":
+            # Only terminate if WAY off track for multiple steps
+            return wheels_inside == 0 and hasattr(self, '_off_track_count') and self._off_track_count > 20
+        elif mode == "normal":
+            return wheels_inside < required
+        elif mode == "strict":
+            return wheels_inside < required
+        
+        return False
 
     def reset(self, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -107,6 +238,26 @@ class RacingEnv(gym.Env):
         self.last_steer_command = 0.0  # Initialize steering tracking for smooth steering reward
         x0, y0 = self.track.centerline[0]
         self.state = VehicleState(x=x0, y=y0, yaw=0.0, vx=3.0, vy=0.0, yaw_rate=0.0, gear=2, rpm=1500.0)
+        
+        # Initialize off-track counter for soft termination
+        self._off_track_count = 0
+        
+        # Initialize position tracking for checkpoint magnetism
+        self._last_pos = np.array([self.state.x, self.state.y])
+        
+        # Check for curriculum progression
+        if self.curriculum and hasattr(self, '_last_checkpoints_hit'):
+            # Record previous episode result for curriculum
+            graduated = self.curriculum.record_episode_result(
+                checkpoints_hit=getattr(self, '_last_checkpoints_hit', 0),
+                lap_completed=getattr(self, '_last_lap_completed', False),
+                episode_num=self.termination_stats["total_episodes"]
+            )
+            
+            if graduated:
+                # Update settings for new curriculum stage
+                self._update_curriculum_settings()
+                self.curriculum.print_curriculum_status()
         
         # Start telemetry for new episode
         if self.telemetry:
@@ -273,21 +424,23 @@ class RacingEnv(gym.Env):
         if center_dist <= (self.track.width/2 + 2.0):  # Within 2m of track edge
             checkpoint_hit = self._check_checkpoint(current_progress)
             
-        # SIMPLIFIED REWARD STRUCTURE
+        # FIXED REWARD STRUCTURE - Proper per-step scaling
         reward = 0.0
         
-        # 1. Core objective: Stay on track
+        # 1. Core objective: Stay on track (SMALL per-step rewards)
         if center_dist <= self.track.width/2:
-            reward += 10.0  # Strong reward for being on track
+            reward += 0.01  # Tiny reward for being on track per step
         elif center_dist <= self.track.width/2 + 1.0:
-            reward += 5.0   # Small reward for being close
+            reward += 0.005   # Even smaller reward for being close
         else:
-            reward -= 10.0  # Penalty for being off track
+            reward -= 0.02  # Small penalty for being off track
             
-        # 2. Progress reward: Use checkpoint system (was working before)
+        # 2. Progress reward: Use checkpoint system (LARGE milestone bonuses)
         if checkpoint_hit:
-            reward += 200.0  # Large bonus for reaching checkpoints
-            print(f"CHECKPOINT {len(self.checkpoints_hit)} HIT! Progress: {len(self.checkpoints_hit)}/{self.num_checkpoints}")
+            base_checkpoint_reward = 50.0
+            curriculum_checkpoint_reward = self._get_curriculum_checkpoint_reward(base_checkpoint_reward)
+            reward += curriculum_checkpoint_reward
+            print(f"CHECKPOINT {len(self.checkpoints_hit)} HIT! Progress: {len(self.checkpoints_hit)}/{self.num_checkpoints} (+{curriculum_checkpoint_reward:.1f} reward)")
             
         # Calculate progress based on checkpoints hit
         self.track_progress = len(self.checkpoints_hit) / self.num_checkpoints
@@ -296,64 +449,90 @@ class RacingEnv(gym.Env):
         if len(self.checkpoints_hit) >= self.num_checkpoints and not self.lap_completed:
             self.lap_completed = True
             
-        # 3. Speed bonus: Only when on track
+        # 3. Speed optimization: Encourage optimal racing speeds
+        speed = np.hypot(s.vx, s.vy)
         if center_dist <= self.track.width/2:
-            speed = np.hypot(s.vx, s.vy)
-            reward += np.clip(speed * 0.1, 0, 5)  # Speed bonus capped at 5
+            # Optimal speed range: 15-40 m/s (54-144 km/h)
+            target_speed = 25.0  # Target racing speed
+            speed_diff = abs(speed - target_speed)
             
-        # 4. Lap completion
+            if speed < 5.0:
+                # Penalty for being too slow
+                reward -= (5.0 - speed) * 0.01
+            elif speed_diff < 5.0:
+                # Reward for being in optimal range
+                speed_bonus = (5.0 - speed_diff) * 0.02
+                reward += speed_bonus
+            else:
+                # Small speed bonus for any forward motion
+                reward += np.clip(speed * 0.001, 0, 0.05)
+            
+        # 4. Lap completion (BIG milestone bonus)
         if self.lap_completed:
             reward += self.cfg.lap_completion_bonus
             
-        # 5. Racing line reward (encourage following optimal path)
+        # 5. Racing line reward (SMALL per-step)
         if center_dist <= self.track.width/2:  # Only when on track
             # Distance to interpolated centerline (racing line)
             racing_line_dist = np.linalg.norm(pos - self.track.interpolated_centerline[
                 np.argmin(np.linalg.norm(self.track.interpolated_centerline - pos, axis=1))
             ])
-            racing_line_reward = max(0, 3.0 - racing_line_dist)  # +3 for perfect line, 0 for 3m+ off
+            racing_line_reward = max(0, 0.03 - racing_line_dist * 0.01)  # Max +0.03 per step
             reward += racing_line_reward
         
-        # 6. Steering extremes penalty (encourage nuanced control)
-        steering_extremes_penalty = abs(steer_command) ** 2 * 2.0  # Quadratic penalty for extreme steering
+        # 6. Steering extremes penalty (SMALL per-step penalty)
+        steering_extremes_penalty = abs(steer_command) ** 2 * 0.05  # Much smaller penalty
         reward -= steering_extremes_penalty
         
-        # 7. Smooth steering reward (encourage gradual steering changes)
+        # 7. Smooth steering reward (SMALL penalty for jerky movements)
         if hasattr(self, 'last_steer_command'):
             steering_change = abs(steer_command - self.last_steer_command)
             if steering_change > 0.3:  # Penalize jerky steering
-                reward -= steering_change * 3.0
+                reward -= steering_change * 0.1  # Much smaller penalty
         self.last_steer_command = steer_command
         
-        # 8. Time penalty
-        reward += self.cfg.time_penalty
+        # 8. Curriculum progress bonus (encourages forward movement)
+        curriculum_bonus = self._get_curriculum_progress_bonus()
+        if curriculum_bonus > 0:
+            reward += curriculum_bonus
             
-        # 9. Stagnation penalty: discourage staying in same area
+        # 8.5. Checkpoint magnetism - attract agent toward next checkpoint
+        checkpoint_magnetism_reward = self._get_checkpoint_magnetism_reward(pos)
+        reward += checkpoint_magnetism_reward
+        
+        # 9. Time penalty (TINY per-step)
+        reward += self.cfg.time_penalty * 0.1  # Scale down time penalty
+            
+        # 10. Stagnation penalty: discourage staying in same area
         if self.step_count > 1000 and len(self.checkpoints_hit) == 0:
-            reward -= 10.0  # Penalty for not hitting any checkpoints after many steps
+            reward -= 1.0  # Smaller stagnation penalty
             
-        # Progressive track boundary enforcement based on training phase
+        # Curriculum-aware track boundary enforcement
         wheels_inside = self._count_wheels_inside_track()
         
-        # Determine termination threshold based on training phase
-        if self.training_phase == "learning":
-            min_wheels_required = 0  # Only terminate if ALL wheels leave track
-        elif self.training_phase == "intermediate":
-            min_wheels_required = 1  # Terminate if only 0 wheels inside
-        else:  # strict phase
-            min_wheels_required = 2  # Racing rule: at least 2 wheels inside
-            
-        # Check for wheel violation termination
-        if wheels_inside < min_wheels_required:
+        # Update off-track counter for soft termination mode
+        if wheels_inside == 0:
+            self._off_track_count += 1
+        else:
+            self._off_track_count = 0
+        
+        # Check curriculum-aware termination conditions
+        if self._should_terminate_curriculum(wheels_inside):
             reward += self.cfg.illegal_position_penalty
             terminated = True
             self.termination_stats["wheel_violations"] += 1
+            
+            # Get current curriculum stage for logging
+            stage_name = self.curriculum.get_stage_name() if self.curriculum else "standard"
+            required = self._curriculum_wheels_required if hasattr(self, '_curriculum_wheels_required') else 2
+            
             if self.step_count % 500 == 0:  # Occasional detailed logging
-                print(f"WHEEL VIOLATION ({self.training_phase} phase) at step {self.step_count}: {wheels_inside}/4 wheels inside, need ≥{min_wheels_required}")
+                print(f"WHEEL VIOLATION [{stage_name.upper()}] at step {self.step_count}: {wheels_inside}/4 wheels inside, need ≥{required}")
         elif wheels_inside < 4:
-            # Some wheels outside - graduated penalty based on phase
+            # Some wheels outside - graduated penalty (softer during early curriculum stages)
             wheels_outside = 4 - wheels_inside
-            penalty_multiplier = {"learning": 0.1, "intermediate": 0.5, "strict": 1.0}[self.training_phase]
+            stage_name = self.curriculum.get_stage_name() if self.curriculum else "strict"
+            penalty_multiplier = {"driving_school": 0.05, "learners_permit": 0.1, "provisional_license": 0.3, "full_license": 0.7, "racing_pro": 1.0}.get(stage_name, 1.0)
             reward += self.cfg.track_violation_penalty * wheels_outside * penalty_multiplier
             
         # Also terminate if extremely far from track (safety check)
@@ -394,17 +573,30 @@ class RacingEnv(gym.Env):
                 ]
                 racing_line_dist = np.linalg.norm(pos - closest_centerline_point)
             
-            # Break down reward components for telemetry
-            track_reward = 10.0 if center_dist <= self.track.width/2 else (-10.0 if center_dist > self.track.width/2 + 1.0 else 5.0)
-            checkpoint_reward = 200.0 if checkpoint_hit else 0.0
-            speed_reward = np.clip(current_speed * 0.1, 0, 5) if center_dist <= self.track.width/2 else 0.0
-            racing_line_reward = max(0, 3.0 - racing_line_dist) if center_dist <= self.track.width/2 else 0.0
-            steering_penalty = abs(steer_command) ** 2 * 2.0
+            # Break down reward components for telemetry (UPDATED to match new reward structure)
+            track_reward = 0.01 if center_dist <= self.track.width/2 else (-0.02 if center_dist > self.track.width/2 + 1.0 else 0.005)
+            checkpoint_reward = self._get_curriculum_checkpoint_reward(50.0) if checkpoint_hit else 0.0
+            
+            # Calculate speed reward breakdown
+            speed_reward = 0.0
+            if center_dist <= self.track.width/2:
+                target_speed = 25.0
+                speed_diff = abs(current_speed - target_speed)
+                if current_speed < 5.0:
+                    speed_reward = -(5.0 - current_speed) * 0.01
+                elif speed_diff < 5.0:
+                    speed_reward = (5.0 - speed_diff) * 0.02
+                else:
+                    speed_reward = np.clip(current_speed * 0.001, 0, 0.05)
+            
+            racing_line_reward = max(0, 0.03 - racing_line_dist * 0.01) if center_dist <= self.track.width/2 else 0.0
+            magnetism_reward = self._get_checkpoint_magnetism_reward(pos)
+            steering_penalty = abs(steer_command) ** 2 * 0.05
             smooth_steering_penalty = 0.0
             if hasattr(self, 'last_steer_command'):
                 steering_change = abs(steer_command - self.last_steer_command)
                 if steering_change > 0.3:
-                    smooth_steering_penalty = steering_change * 3.0
+                    smooth_steering_penalty = steering_change * 0.1
                     
             frame = TelemetryFrame(
                 timestamp=time.time(),
@@ -435,6 +627,7 @@ class RacingEnv(gym.Env):
                 speed_reward=speed_reward,
                 checkpoint_reward=checkpoint_reward,
                 racing_line_reward=racing_line_reward,
+                magnetism_reward=magnetism_reward,
                 steering_penalty=steering_penalty,
                 smooth_steering_penalty=smooth_steering_penalty
             )
@@ -455,11 +648,24 @@ class RacingEnv(gym.Env):
                 else:
                     termination_reason = "wheel_violation"
                     
-                self.telemetry.end_episode(self.lap_completed, termination_reason, self.training_phase)
+                # Store episode results for curriculum tracking
+                self._last_checkpoints_hit = len(self.checkpoints_hit)
+                self._last_lap_completed = self.lap_completed
+                
+                # Include curriculum stage in telemetry
+                current_stage = self.curriculum.get_stage_name() if self.curriculum else self.training_phase
+                self.telemetry.end_episode(self.lap_completed, termination_reason, current_stage)
                 
                 # Print training progress every 100 episodes
                 if self.termination_stats["total_episodes"] % 100 == 0:
                     self.telemetry.print_training_progress(self.termination_stats["total_episodes"])
+                    # Also print curriculum status
+                    if self.curriculum:
+                        self.curriculum.print_curriculum_status()
+            else:
+                # Store episode results for curriculum tracking (non-telemetry case)
+                self._last_checkpoints_hit = len(self.checkpoints_hit)
+                self._last_lap_completed = self.lap_completed
         
         return self._get_obs(), reward, terminated, truncated, {}
 

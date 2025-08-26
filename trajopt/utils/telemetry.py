@@ -41,6 +41,7 @@ class TelemetryFrame:
     speed_reward: float
     checkpoint_reward: float
     racing_line_reward: float
+    magnetism_reward: float  # New: checkpoint magnetism reward
     steering_penalty: float
     smooth_steering_penalty: float
 
@@ -94,6 +95,14 @@ class RacingTelemetry:
         # Performance tracking
         self.best_lap_time: float = float('inf')
         self.best_episode: int = -1
+        
+        # Terminal formatting
+        self.BOLD = '\033[1m'
+        self.RESET = '\033[0m'
+        self.GREEN = '\033[92m'
+        self.RED = '\033[91m'
+        self.YELLOW = '\033[93m'
+        self.BLUE = '\033[94m'
         
     def start_episode(self, episode_num: int):
         """Start a new episode."""
@@ -200,37 +209,40 @@ class RacingTelemetry:
         """Print detailed episode summary."""
         print(f"\n")
         print(f"{'='*80}")
-        print(f"EPISODE {summary.episode} SUMMARY [{summary.training_phase.upper()}]")
+        print(f"{self.BOLD}EPISODE {summary.episode} SUMMARY [{summary.training_phase.upper()}]{self.RESET}")
         print(f"{'='*80}")
         
         # Completion status
-        status = "✅ LAP COMPLETED" if summary.lap_completed else f"❌ {summary.termination_reason.upper()}"
+        if summary.lap_completed:
+            status = f"{self.GREEN}✅ LAP COMPLETED{self.RESET}"
+        else:
+            status = f"{self.RED}❌ {summary.termination_reason.upper()}{self.RESET}"
         print(f"Status: {status}")
         print(f"Duration: {summary.lap_time:.1f}s")
         print(f"Progress: {summary.checkpoints_hit}/{summary.max_checkpoints} checkpoints")
         
         # Performance metrics
-        print(f"\nPERFORMANCE:")
+        print(f"\n{self.BOLD}PERFORMANCE:{self.RESET}")
         print(f"  Average Speed: {summary.average_speed*3.6:6.1f} km/h")
         print(f"  Max Speed:     {summary.max_speed*3.6:6.1f} km/h") 
         print(f"  Distance:      {summary.total_distance:6.1f} m")
         print(f"  Time on Track: {summary.time_on_track:6.1f}%")
         
         # Racing quality
-        print(f"\nRACING QUALITY:")
+        print(f"\n{self.BOLD}RACING QUALITY:{self.RESET}")
         print(f"  Avg Center Dist:     {summary.average_center_distance:5.2f} m")
         print(f"  Avg Racing Line Dist: {summary.average_racing_line_distance:5.2f} m")
         print(f"  Steering Smoothness:  {summary.steering_smoothness:5.3f}")
         print(f"  Max Steering Used:    {summary.max_steering_used:5.1f}°")
         
         # Rewards
-        print(f"\nREWARDS:")
+        print(f"\n{self.BOLD}REWARDS:{self.RESET}")
         print(f"  Total:      {summary.total_reward:8.1f}")
-        print(f"  Per Step:   {summary.average_reward_per_step:8.2f}")
+        print(f"  Per Step:   {summary.average_reward_per_step:8.3f}")
         
         # Best performance tracking
         if summary.lap_completed and hasattr(self, 'best_episode') and self.current_episode == self.best_episode:
-            print(f"\nNEW BEST LAP TIME! {summary.lap_time:.1f}s")
+            print(f"\n{self.YELLOW}🏆 NEW BEST LAP TIME! {summary.lap_time:.1f}s{self.RESET}")
             
         print(f"{'='*80}\n")
     
@@ -247,7 +259,7 @@ class RacingTelemetry:
         avg_time_on_track = np.mean([ep.time_on_track for ep in recent_episodes])
         avg_reward = np.mean([ep.total_reward for ep in recent_episodes])
         
-        print(f"\nTRAINING PROGRESS (Last 10 episodes):")
+        print(f"\n{self.BOLD}TRAINING PROGRESS (Last 10 episodes):{self.RESET}")
         print(f"  Episodes Completed: {episodes_completed}")
         print(f"  Lap Completion Rate: {completion_rate:5.1f}%")
         print(f"  Average Speed: {avg_speed:6.1f} km/h")
@@ -255,7 +267,7 @@ class RacingTelemetry:
         print(f"  Average Reward: {avg_reward:8.1f}")
         
         if hasattr(self, 'best_lap_time') and self.best_lap_time < float('inf'):
-            print(f"  Best Lap Time: {self.best_lap_time:.1f}s (Episode {self.best_episode})")
+            print(f"  {self.GREEN}Best Lap Time: {self.best_lap_time:.1f}s (Episode {self.best_episode}){self.RESET}")
     
     def save_episode_data(self, episode_num: int):
         """Save episode telemetry data to file."""
