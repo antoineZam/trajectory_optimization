@@ -41,20 +41,78 @@ class RacingEnv(gym.Env):
         self.track = track  # Current track (may be modified by curriculum)
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
-        
+
         # Initialize curriculum learning system
         self.curriculum = CurriculumLearning() if enable_curriculum else None
         
         # Initialize telemetry system
         self.telemetry = RacingTelemetry() if enable_telemetry else None
 
-        # Observation: [norm_x, norm_y, yaw, vx, vy, yaw_rate] + next 5 relative points (x,y)
-        self.k = 5
-        self.obs_dim = 6 + 2*self.k
+        # ENHANCED OBSERVATION SPACE for Racing Context
+        self.k = 5  # Lookahead points
         
-        # Define reasonable observation bounds matching our clipping
-        obs_low = np.array([-1000.0, -1000.0, -np.pi, -100.0, -100.0, -10.0] + [-100.0]*10)  # 6 + 2*5
-        obs_high = np.array([1000.0, 1000.0, np.pi, 100.0, 100.0, 10.0] + [100.0]*10)  # 6 + 2*5
+        # Observation components:
+        # 1. Vehicle state (6D): x, y, yaw, vx, vy, yaw_rate  
+        # 2. Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
+        # 3. Track context (8D): progress, center_dist, track_width, heading_alignment, 
+        #                        curvature_ahead, speed_limit_ahead, boundary_distances(2D)
+        # 4. Racing line (5D): racing_line_dist, racing_line_heading_diff, optimal_speed, 
+        #                      racing_line_lookahead(2D)  
+        # 5. Checkpoint context (4D): next_checkpoint_dist, checkpoint_direction(2D), checkpoints_remaining
+        # 6. Physical limits (3D): max_steering_available, slip_angle, traction_coefficient
+        # 7. Temporal context (4D): prev_steer, prev_throttle, steering_smoothness, velocity_change
+        # 8. Lookahead geometry (10D): 5 track centerline points relative to vehicle
+        
+        vehicle_state_dim = 6
+        vehicle_telemetry_dim = 6
+        track_context_dim = 8  
+        racing_line_dim = 5
+        checkpoint_context_dim = 4
+        physical_limits_dim = 3
+        temporal_context_dim = 4
+        lookahead_dim = 2 * self.k  # 5 points * (x,y)
+        
+        self.obs_dim = (vehicle_state_dim + vehicle_telemetry_dim + track_context_dim + racing_line_dim + 
+                       checkpoint_context_dim + physical_limits_dim + temporal_context_dim + lookahead_dim)
+        
+        # Enhanced observation bounds (46 total dimensions)
+        obs_low = np.array([
+            # Vehicle state (6D)
+            -1000.0, -1000.0, -np.pi, -100.0, -100.0, -10.0,
+            # Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
+            500.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            # Track context (8D)  
+            0.0, -50.0, 1.0, -1.0, -5.0, 0.0, 0.0, 0.0,
+            # Racing line (5D)
+            0.0, -np.pi, 0.0, -100.0, -100.0, 
+            # Checkpoint context (4D)
+            0.0, -100.0, -100.0, 0.0,
+            # Physical limits (3D)
+            0.0, -np.pi/2, 0.0,
+            # Temporal context (4D)
+            -1.0, 0.0, 0.0, -50.0,
+            # Lookahead (10D)
+            *[-100.0]*10
+        ])
+        
+        obs_high = np.array([
+            # Vehicle state (6D)
+            1000.0, 1000.0, np.pi, 100.0, 100.0, 10.0,
+            # Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
+            8000.0, 8.0, 1.0, 1.0, 1.0, 100.0,
+            # Track context (8D)
+            1.0, 50.0, 50.0, 1.0, 5.0, 100.0, 50.0, 50.0,
+            # Racing line (5D)  
+            50.0, np.pi, 100.0, 100.0, 100.0,
+            # Checkpoint context (4D)
+            200.0, 100.0, 100.0, 10.0,
+            # Physical limits (3D)
+            1.0, np.pi/2, 2.0,
+            # Temporal context (4D)
+            1.0, 1.0, 10.0, 50.0,
+            # Lookahead (10D)
+            *[100.0]*10
+        ])
         
         # Action space: [throttle, brake, steer_command]
         # steer_command ∈ [-1, 1] maps to [-max_steering_angle, +max_steering_angle]
@@ -72,6 +130,17 @@ class RacingEnv(gym.Env):
         # Checkpoint system for full lap completion
         self.num_checkpoints = 4  # Divide track into 4 larger segments - easier to complete
         self.checkpoints_hit = set()  # Track which checkpoints have been reached
+        
+        # Initialize temporal context tracking
+        self.prev_steer = 0.0
+        self.prev_throttle = 0.0
+        self.prev_brake = 0.0
+        self.prev_velocity = 0.0
+        self.steering_history = []  # For smoothness calculation
+        self.max_history_length = 10
+        
+        # Initialize vehicle telemetry tracking
+        self.cumulative_fuel_usage = 0.0  # Track fuel consumption over episode
         self.current_checkpoint = 0  # Next checkpoint to reach
         
         # Logging for episode termination analysis
@@ -236,6 +305,16 @@ class RacingEnv(gym.Env):
         self.checkpoints_hit = set()
         self.current_checkpoint = 0
         self.last_steer_command = 0.0  # Initialize steering tracking for smooth steering reward
+        
+        # Reset temporal context for enhanced observations
+        self.prev_steer = 0.0
+        self.prev_throttle = 0.0
+        self.prev_brake = 0.0
+        self.prev_velocity = 0.0
+        self.steering_history = []
+        
+        # Reset vehicle telemetry tracking
+        self.cumulative_fuel_usage = 0.0
         x0, y0 = self.track.centerline[0]
         self.state = VehicleState(x=x0, y=y0, yaw=0.0, vx=3.0, vy=0.0, yaw_rate=0.0, gear=2, rpm=1500.0)
         
@@ -349,50 +428,288 @@ class RacingEnv(gym.Env):
 
     def _get_obs(self):
         s = self.state
+        current_pos = np.array([s.x, s.y])
         
-        # Get track center for normalization
+        # =============================================================================
+        # 1. VEHICLE STATE (6D) - Enhanced normalization
+        # =============================================================================
         track_center = np.mean(self.track.centerline, axis=0)
-        
-        # Normalize position relative to track center
         pos_x = np.clip(s.x - track_center[0], -1000.0, 1000.0)
         pos_y = np.clip(s.y - track_center[1], -1000.0, 1000.0)
+        yaw = np.arctan2(np.sin(s.yaw), np.cos(s.yaw))  # Normalized to [-π, π]
+        vx = np.clip(s.vx, -100.0, 100.0)
+        vy = np.clip(s.vy, -100.0, 100.0)
+        yaw_rate = np.clip(s.yaw_rate, -10.0, 10.0)
         
-        # Normalize angle to [-π, π]
-        yaw = np.arctan2(np.sin(s.yaw), np.cos(s.yaw))
-        
-        # Clip velocities to reasonable bounds
-        vx = np.clip(s.vx, -100.0, 100.0)  # m/s
-        vy = np.clip(s.vy, -100.0, 100.0)  # m/s
-        yaw_rate = np.clip(s.yaw_rate, -10.0, 10.0)  # rad/s
-        
-        # Get next points and normalize relative to current position
+        # =============================================================================
+        # 2. VEHICLE TELEMETRY (6D) - NEW: Internal vehicle dashboard information
+        # =============================================================================
         try:
-            # Use interpolated track for smoother lookahead points
-            closest_idx = np.argmin(cdist([np.array([s.x, s.y])], self.track.interpolated_centerline)[0])
+            # RPM (normalized to typical range 500-8000)
+            rpm_normalized = np.clip(s.rpm / 8000.0, 0.0, 1.0)
             
-            # Get k points ahead on the interpolated centerline
-            lookahead_indices = [(closest_idx + i*20) % len(self.track.interpolated_centerline) for i in range(1, self.k+1)]
-            nxt = self.track.interpolated_centerline[lookahead_indices]
+            # Current gear (normalized to typical 1-8 gear range)
+            gear_normalized = np.clip(s.gear / 8.0, 0.0, 1.0)
             
-            # Normalize next points relative to current position
-            nxt_rel = nxt - np.array([s.x, s.y])
-            nxt_rel = np.clip(nxt_rel, -100.0, 100.0)  # Clip to reasonable bounds
+            # Engine load (based on current throttle input)
+            engine_load = np.clip(self.prev_throttle, 0.0, 1.0)
+            
+            # Brake pressure (based on current brake input)
+            brake_pressure = np.clip(self.prev_brake, 0.0, 1.0)
+            
+            # Wheel slip estimation (simplified - difference between wheel speed and ground speed)
+            current_speed = np.hypot(vx, vy)
+            if current_speed > 1.0 and s.rpm > 1000:
+                # Estimate wheel speed from RPM and gear
+                gear = max(1, min(s.gear, len(self.spec.gear_ratios)))
+                ratio = self.spec.gear_ratios[gear-1] * self.spec.final_drive
+                wheel_radius = 0.33  # Typical racing tire radius
+                wheel_speed = (s.rpm / 9.5493) / ratio * wheel_radius  # Convert RPM to m/s
+                wheel_slip = abs(wheel_speed - current_speed) / max(current_speed, 1.0)
+                wheel_slip = np.clip(wheel_slip, 0.0, 1.0)
+            else:
+                wheel_slip = 0.0
+            
+            # Fuel usage estimation (simplified - based on throttle and RPM)
+            if hasattr(self, 'cumulative_fuel_usage'):
+                fuel_consumption_rate = (engine_load * 0.5 + (s.rpm / 8000.0) * 0.3) * 0.1
+                self.cumulative_fuel_usage += fuel_consumption_rate * self.cfg.dt
+                fuel_usage = np.clip(self.cumulative_fuel_usage, 0.0, 100.0)
+            else:
+                self.cumulative_fuel_usage = 0.0
+                fuel_usage = 0.0
+                
         except:
-            # Fallback if sampling fails
+            # Fallback values if telemetry calculations fail
+            rpm_normalized, gear_normalized, engine_load = 0.2, 0.25, 0.0
+            brake_pressure, wheel_slip, fuel_usage = 0.0, 0.0, 0.0
+        
+        # =============================================================================
+        # 3. TRACK CONTEXT (8D) - NEW: Racing-specific track awareness
+        # =============================================================================
+        try:
+            # Get closest point on track for context calculations
+            distances = cdist([current_pos], self.track.interpolated_centerline)[0]
+            closest_idx = np.argmin(distances)
+            center_dist = distances[closest_idx]
+            
+            # Track progress (0-1) - how far around the lap
+            track_progress = closest_idx / len(self.track.interpolated_centerline)
+            
+            # Distance to centerline (signed: left negative, right positive)
+            closest_point = self.track.interpolated_centerline[closest_idx]
+            if closest_idx < len(self.track.interpolated_centerline) - 1:
+                track_vector = self.track.interpolated_centerline[closest_idx + 1] - closest_point
+            else:
+                track_vector = closest_point - self.track.interpolated_centerline[closest_idx - 1]
+            track_heading = np.arctan2(track_vector[1], track_vector[0])
+            
+            # Calculate signed distance (left/right of centerline)
+            to_vehicle = current_pos - closest_point
+            signed_center_dist = np.cross(track_vector, to_vehicle) / np.linalg.norm(track_vector)
+            signed_center_dist = np.clip(signed_center_dist, -50.0, 50.0)
+            
+            # Current track width at this position
+            track_width = self.track.width
+            
+            # Vehicle heading alignment with track (-1 to 1, 1 = perfect alignment)
+            heading_diff = yaw - track_heading
+            heading_diff = np.arctan2(np.sin(heading_diff), np.cos(heading_diff))
+            heading_alignment = np.cos(heading_diff)  # 1 = aligned, 0 = perpendicular, -1 = opposite
+            
+            # Curvature ahead (estimate from next few points)
+            lookahead_points = 3
+            if closest_idx + lookahead_points < len(self.track.interpolated_centerline):
+                p1 = self.track.interpolated_centerline[closest_idx]
+                p2 = self.track.interpolated_centerline[closest_idx + lookahead_points//2]
+                p3 = self.track.interpolated_centerline[closest_idx + lookahead_points]
+                
+                # Estimate curvature using three points
+                v1 = p2 - p1
+                v2 = p3 - p2
+                angle_change = np.arctan2(np.cross(v1, v2), np.dot(v1, v2))
+                distance = np.linalg.norm(p3 - p1)
+                curvature = angle_change / max(distance, 1e-6)
+                curvature = np.clip(curvature, -5.0, 5.0)
+            else:
+                curvature = 0.0
+            
+            # Speed limit ahead (simplified - based on curvature)
+            speed_limit = max(20.0, 80.0 - abs(curvature) * 30.0)  # Slower in curves
+            speed_limit = np.clip(speed_limit, 0.0, 100.0)
+            
+            # Distances to track boundaries (approximate)
+            left_boundary_dist = max(0.0, track_width/2 + signed_center_dist)
+            right_boundary_dist = max(0.0, track_width/2 - signed_center_dist)
+            
+        except:
+            # Fallback values if track calculations fail
+            track_progress, signed_center_dist, track_width = 0.0, 0.0, 10.0
+            heading_alignment, curvature, speed_limit = 0.0, 0.0, 50.0
+            left_boundary_dist, right_boundary_dist = 5.0, 5.0
+        
+        # =============================================================================
+        # 4. RACING LINE CONTEXT (5D) - NEW: Optimal racing line awareness  
+        # =============================================================================
+        try:
+            # Distance to racing line (use centerline as proxy for now)
+            racing_line_dist = center_dist
+            racing_line_dist = np.clip(racing_line_dist, 0.0, 50.0)
+            
+            # Racing line heading difference
+            racing_line_heading_diff = heading_diff  # Same as track for now
+            racing_line_heading_diff = np.clip(racing_line_heading_diff, -np.pi, np.pi)
+            
+            # Optimal speed for current section (based on curvature)
+            current_speed = np.hypot(vx, vy)
+            optimal_speed = speed_limit * 0.8  # 80% of speed limit as racing target
+            optimal_speed = np.clip(optimal_speed, 0.0, 100.0)
+            
+            # Racing line lookahead (next optimal point)
+            if closest_idx + 20 < len(self.track.interpolated_centerline):
+                racing_line_next = self.track.interpolated_centerline[closest_idx + 20]
+                racing_line_rel = racing_line_next - current_pos
+                racing_line_rel = np.clip(racing_line_rel, -100.0, 100.0)
+            else:
+                racing_line_rel = np.array([0.0, 0.0])
+                
+        except:
+            racing_line_dist, racing_line_heading_diff, optimal_speed = 0.0, 0.0, 25.0
+            racing_line_rel = np.array([0.0, 0.0])
+        
+        # =============================================================================
+        # 5. CHECKPOINT CONTEXT (4D) - NEW: Goal-oriented navigation
+        # =============================================================================
+        try:
+            # Next checkpoint to reach
+            next_checkpoint_idx = self.current_checkpoint % self.num_checkpoints
+            checkpoint_track_pos = (next_checkpoint_idx + 1) * len(self.track.interpolated_centerline) // self.num_checkpoints
+            checkpoint_track_pos = checkpoint_track_pos % len(self.track.interpolated_centerline)
+            
+            checkpoint_pos = self.track.interpolated_centerline[checkpoint_track_pos]
+            checkpoint_dist = np.linalg.norm(current_pos - checkpoint_pos)
+            checkpoint_dist = np.clip(checkpoint_dist, 0.0, 200.0)
+            
+            # Direction to checkpoint (relative vector)
+            checkpoint_direction = checkpoint_pos - current_pos
+            checkpoint_direction = np.clip(checkpoint_direction, -100.0, 100.0)
+            
+            # Checkpoints remaining
+            checkpoints_remaining = self.num_checkpoints - len(self.checkpoints_hit)
+            checkpoints_remaining = np.clip(checkpoints_remaining, 0.0, 10.0)
+            
+        except:
+            checkpoint_dist = 100.0
+            checkpoint_direction = np.array([0.0, 0.0])
+            checkpoints_remaining = 4.0
+        
+        # =============================================================================
+        # 6. PHYSICAL LIMITS (3D) - NEW: Vehicle dynamics awareness
+        # =============================================================================
+        try:
+            current_speed = np.hypot(vx, vy)
+            max_steering = get_max_steering_angle(self.spec, current_speed)
+            max_steering_normalized = max_steering / self.spec.max_steering_angle  # 0-1
+            max_steering_normalized = np.clip(max_steering_normalized, 0.0, 1.0)
+            
+            # Slip angle (simplified)
+            if current_speed > 1.0:
+                slip_angle = np.arctan2(vy, vx) - yaw
+                slip_angle = np.arctan2(np.sin(slip_angle), np.cos(slip_angle))
+            else:
+                slip_angle = 0.0
+            slip_angle = np.clip(slip_angle, -np.pi/2, np.pi/2)
+            
+            # Traction coefficient (simplified - could be enhanced with tire model)
+            traction_coeff = 1.0  # Assume good traction for now
+            
+        except:
+            max_steering_normalized, slip_angle, traction_coeff = 0.5, 0.0, 1.0
+        
+        # =============================================================================
+        # 7. TEMPORAL CONTEXT (4D) - NEW: Action history and smoothness
+        # =============================================================================
+        # Previous actions
+        prev_steer = np.clip(self.prev_steer, -1.0, 1.0)
+        prev_throttle = np.clip(self.prev_throttle, 0.0, 1.0)
+        
+        # Steering smoothness (variance of recent steering inputs)
+        if len(self.steering_history) > 1:
+            steering_smoothness = np.var(self.steering_history)
+            steering_smoothness = np.clip(steering_smoothness, 0.0, 10.0)
+        else:
+            steering_smoothness = 0.0
+        
+        # Velocity change (acceleration)
+        current_speed = np.hypot(vx, vy)
+        velocity_change = current_speed - self.prev_velocity
+        velocity_change = np.clip(velocity_change, -50.0, 50.0)
+        
+        # =============================================================================
+        # 8. LOOKAHEAD GEOMETRY (10D) - Enhanced track preview
+        # =============================================================================
+        try:
+            # Get k points ahead on track with better spacing
+            lookahead_indices = [(closest_idx + i*15) % len(self.track.interpolated_centerline) 
+                               for i in range(1, self.k+1)]
+            nxt = self.track.interpolated_centerline[lookahead_indices]
+            nxt_rel = nxt - current_pos
+            nxt_rel = np.clip(nxt_rel, -100.0, 100.0)
+        except:
             nxt_rel = np.zeros((self.k, 2))
         
-        # Construct observation with proper bounds
-        obs_values = [pos_x, pos_y, yaw, vx, vy, yaw_rate] + nxt_rel.flatten().tolist()
+        # =============================================================================
+        # CONSTRUCT FINAL OBSERVATION VECTOR (46D)
+        # =============================================================================
+        obs_values = []
         
-        # Final safety check for NaN/inf values
+        # 1. Vehicle state (6D)
+        obs_values.extend([pos_x, pos_y, yaw, vx, vy, yaw_rate])
+        
+        # 2. Vehicle telemetry (6D)
+        obs_values.extend([rpm_normalized, gear_normalized, engine_load, brake_pressure, wheel_slip, fuel_usage])
+        
+        # 3. Track context (8D)
+        obs_values.extend([track_progress, signed_center_dist, track_width, heading_alignment,
+                          curvature, speed_limit, left_boundary_dist, right_boundary_dist])
+        
+        # 4. Racing line (5D)
+        obs_values.extend([racing_line_dist, racing_line_heading_diff, optimal_speed,
+                          racing_line_rel[0], racing_line_rel[1]])
+        
+        # 5. Checkpoint context (4D)
+        obs_values.extend([checkpoint_dist, checkpoint_direction[0], checkpoint_direction[1], 
+                          checkpoints_remaining])
+        
+        # 6. Physical limits (3D)
+        obs_values.extend([max_steering_normalized, slip_angle, traction_coeff])
+        
+        # 7. Temporal context (4D)
+        obs_values.extend([prev_steer, prev_throttle, steering_smoothness, velocity_change])
+        
+        # 8. Lookahead geometry (10D)
+        obs_values.extend(nxt_rel.flatten().tolist())
+        
+        # Final safety checks and normalization
         obs_values = [np.clip(float(val), -1e6, 1e6) if np.isfinite(val) else 0.0 for val in obs_values]
-        
         obs = np.array(obs_values, dtype=np.float32)
+        
         return obs
         
         
     def step(self, action: np.ndarray):
         throttle, brake, steer_command = float(action[0]), float(action[1]), float(action[2])    
+        
+        # Update temporal context tracking for enhanced observations
+        self.prev_velocity = np.hypot(self.state.vx, self.state.vy) if self.state else 0.0
+        self.prev_steer = steer_command
+        self.prev_throttle = throttle
+        self.prev_brake = brake
+        
+        # Update steering history for smoothness calculation
+        self.steering_history.append(steer_command)
+        if len(self.steering_history) > self.max_history_length:
+            self.steering_history.pop(0)
         
         # Map agent action [-1, 1] to actual steering angle in radians
         # This ensures agent commands make physical sense
