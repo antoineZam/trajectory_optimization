@@ -53,7 +53,7 @@ class RacingEnv(gym.Env):
         
         # Observation components:
         # 1. Vehicle state (6D): x, y, yaw, vx, vy, yaw_rate  
-        # 2. Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
+        # 2. Vehicle telemetry (7D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage, gear_speed_limit
         # 3. Track context (8D): progress, center_dist, track_width, heading_alignment, 
         #                        curvature_ahead, speed_limit_ahead, boundary_distances(2D)
         # 4. Racing line (5D): racing_line_dist, racing_line_heading_diff, optimal_speed, 
@@ -64,7 +64,7 @@ class RacingEnv(gym.Env):
         # 8. Lookahead geometry (10D): 5 track centerline points relative to vehicle
         
         vehicle_state_dim = 6
-        vehicle_telemetry_dim = 6
+        vehicle_telemetry_dim = 7
         track_context_dim = 8  
         racing_line_dim = 5
         checkpoint_context_dim = 4
@@ -75,12 +75,12 @@ class RacingEnv(gym.Env):
         self.obs_dim = (vehicle_state_dim + vehicle_telemetry_dim + track_context_dim + racing_line_dim + 
                        checkpoint_context_dim + physical_limits_dim + temporal_context_dim + lookahead_dim)
         
-        # Enhanced observation bounds (46 total dimensions)
+        # Enhanced observation bounds (47 total dimensions)
         obs_low = np.array([
             # Vehicle state (6D)
             -1000.0, -1000.0, -np.pi, -100.0, -100.0, -10.0,
-            # Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
-            500.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            # Vehicle telemetry (7D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage, gear_speed_limit
+            500.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             # Track context (8D)  
             0.0, -50.0, 1.0, -1.0, -5.0, 0.0, 0.0, 0.0,
             # Racing line (5D)
@@ -98,8 +98,8 @@ class RacingEnv(gym.Env):
         obs_high = np.array([
             # Vehicle state (6D)
             1000.0, 1000.0, np.pi, 100.0, 100.0, 10.0,
-            # Vehicle telemetry (6D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage
-            8000.0, 8.0, 1.0, 1.0, 1.0, 100.0,
+            # Vehicle telemetry (7D): rpm, gear, engine_load, brake_pressure, wheel_slip, fuel_usage, gear_speed_limit
+            8000.0, 8.0, 1.0, 1.0, 1.0, 100.0, 100.0,
             # Track context (8D)
             1.0, 50.0, 50.0, 1.0, 5.0, 100.0, 50.0, 50.0,
             # Racing line (5D)  
@@ -478,11 +478,16 @@ class RacingEnv(gym.Env):
             else:
                 self.cumulative_fuel_usage = 0.0
                 fuel_usage = 0.0
+            
+            # Current gear speed limit (normalized)
+            from physics.physics_engine import get_max_speed_for_gear
+            gear_speed_limit = get_max_speed_for_gear(self.spec, s.gear, absolute_top_speed=88.0)
+            gear_speed_limit_normalized = np.clip(gear_speed_limit / 88.0, 0.0, 1.0)  # Normalize to 0-88 m/s range
                 
         except:
             # Fallback values if telemetry calculations fail
             rpm_normalized, gear_normalized, engine_load = 0.2, 0.25, 0.0
-            brake_pressure, wheel_slip, fuel_usage = 0.0, 0.0, 0.0
+            brake_pressure, wheel_slip, fuel_usage, gear_speed_limit_normalized = 0.0, 0.0, 0.0, 0.5
         
         # =============================================================================
         # 3. TRACK CONTEXT (8D) - NEW: Racing-specific track awareness
@@ -659,15 +664,15 @@ class RacingEnv(gym.Env):
             nxt_rel = np.zeros((self.k, 2))
         
         # =============================================================================
-        # CONSTRUCT FINAL OBSERVATION VECTOR (46D)
+        # CONSTRUCT FINAL OBSERVATION VECTOR (47D)
         # =============================================================================
         obs_values = []
         
         # 1. Vehicle state (6D)
         obs_values.extend([pos_x, pos_y, yaw, vx, vy, yaw_rate])
         
-        # 2. Vehicle telemetry (6D)
-        obs_values.extend([rpm_normalized, gear_normalized, engine_load, brake_pressure, wheel_slip, fuel_usage])
+        # 2. Vehicle telemetry (7D)
+        obs_values.extend([rpm_normalized, gear_normalized, engine_load, brake_pressure, wheel_slip, fuel_usage, gear_speed_limit_normalized])
         
         # 3. Track context (8D)
         obs_values.extend([track_progress, signed_center_dist, track_width, heading_alignment,

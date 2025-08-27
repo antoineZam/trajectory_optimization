@@ -38,10 +38,10 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str,
     print(f"  - Max steering angle: {spec.max_steering_angle:.2f} rad ({np.degrees(spec.max_steering_angle):.1f}°)")
     print(f"  - Minimum turn radius: {spec.min_turn_radius}m")
     print("  - Physics engine applies additional speed-based clipping")
-    print("ENHANCED OBSERVATION SPACE (46 Dimensions):")
+    print("ENHANCED OBSERVATION SPACE (47 Dimensions):")
     print("  Vehicle State (6D): position, velocity, heading, angular rate")
-    print("  Vehicle Telemetry (6D): RPM, gear, engine load, brake pressure,")
-    print("  wheel slip, fuel consumption - like a racing dashboard!")
+    print("  Vehicle Telemetry (7D): RPM, gear, engine load, brake pressure,")
+    print("  wheel slip, fuel consumption, gear speed limit - like a racing dashboard!")
     print("  Track Context (8D): progress, centerline distance, track width,")
     print("  heading alignment, curvature ahead, speed limits, boundary distances")
     print("  Racing Line (5D): distance to optimal path, heading alignment,")
@@ -80,16 +80,29 @@ def train_and_export(track_path: str, vehicle_cfg_path: str, out_path: str,
     print("     Full License: 500+ episodes, 30% success → Graduate")
     print("     Racing Pro: Professional racing, 20% lap completion target")
     print("     Auto-graduation prevents getting stuck in failure loops!")
-    print("\nIMPROVED STEERING LIMITATIONS (More learning-friendly):")
-    from physics.physics_engine import get_steering_info
-    for speed_kmh in [0, 15, 30, 60, 100, 150]:
-        speed_ms = speed_kmh / 3.6
-        info = get_steering_info(spec, speed_ms)
-        reduction = info['max_steering_angle_deg'] / np.degrees(spec.max_steering_angle)
-        print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° ({reduction:4.1%} of base) → {info['turn_radius_m']:4.1f}m radius")
-    print("  Low speeds: Near-full steering for learning")
-    print("  High speeds: Realistic physics constraints")
-    print("  Agent learns proper speed-cornering relationship!")
+    print("\nREALISTIC GEAR-BASED SPEED LIMITS (RPM limited):")
+    from physics.physics_engine import get_steering_info, get_gear_speed_info
+    gear_info = get_gear_speed_info(spec)
+    print(f"  RPM Limiter: {gear_info['rpm_limiter']:,.0f} RPM")
+    print(f"  Final Drive: {gear_info['final_drive']:.2f}:1")
+    print(f"  Absolute Top Speed: {gear_info['absolute_top_speed_kmh']:.1f} km/h ({gear_info['absolute_top_speed_ms']:.1f} m/s)")
+    print(f"  Effective Top Speed: {gear_info['top_speed_kmh']:.1f} km/h ({gear_info['top_speed_ms']:.1f} m/s)")
+    print("  Gear Speed Limits:")
+    for gear in range(1, len(spec.gear_ratios) + 1):
+        gear_data = gear_info['gear_speeds'][f'gear_{gear}']
+        print(f"    Gear {gear}: {gear_data['max_speed_kmh']:5.1f} km/h ({gear_data['max_speed_ms']:4.1f} m/s) @ {gear_data['rpm_at_max_speed']:,.0f} RPM")
+    print("  No more unrealistic 200+ m/s speeds!")
+    print("  Each gear properly limited by RPM and gear ratios")
+    print("  Absolute cap ensures realistic racing speeds (88 m/s = 317 km/h)")
+    
+    print("\nSTEERING LIMITATIONS (Speed-dependent):")
+    for speed_kmh in [0, 30, 60, 120, 180]:
+        if speed_kmh <= gear_info['top_speed_kmh']:
+            speed_ms = speed_kmh / 3.6
+            info = get_steering_info(spec, speed_ms)
+            reduction = info['max_steering_angle_deg'] / np.degrees(spec.max_steering_angle)
+            print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° ({reduction:4.1%} of base) → {info['turn_radius_m']:4.1f}m radius")
+    print("  Agent learns proper speed-cornering AND speed-gear relationships!")
     print("=" * 60)
     
     env = DummyVecEnv([make_env])
