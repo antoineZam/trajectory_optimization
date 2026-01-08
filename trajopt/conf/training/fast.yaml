@@ -1,0 +1,26 @@
+# Fast training configuration for quick experiments
+# Uses more parallel environments for faster iteration
+
+timesteps: 50000
+
+algorithm: PPO
+learning_rate: 0.001
+n_steps: 1024
+batch_size: 256
+n_epochs: 5
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+# Vectorized environment settings
+env:
+  n_envs: 8  # More parallel envs for faster training
+  normalize_obs: true
+  normalize_reward: true
+
+log_interval: 5
+save_freq: 10000
+

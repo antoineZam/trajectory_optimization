@@ -1,7 +1,11 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Tuple, Dict
+from typing import Dict, Tuple
+
 import numpy as np
+
+from schemas import validate_vehicle_data
 
 
 # -------------------------
@@ -44,35 +48,51 @@ class VehicleSpec:
 
     @staticmethod
     def from_config(cfg: Dict) -> "VehicleSpec":
-        ch, pw, st, br = cfg["chassis"], cfg["powertrain"], cfg["suspension_tires"], cfg["brakes"]
+        """Create VehicleSpec from configuration dictionary.
+        
+        Args:
+            cfg: Vehicle configuration dictionary (from JSON, YAML, or Hydra).
+            
+        Returns:
+            Validated VehicleSpec instance.
+            
+        Raises:
+            pydantic.ValidationError: If configuration fails validation.
+        """
+        # Validate configuration with Pydantic schema
+        validated = validate_vehicle_data(cfg)
+        
+        ch = validated.chassis
+        pw = validated.powertrain
+        st = validated.suspension_tires
+        br = validated.brakes
+        
         return VehicleSpec(
-            mass=float(ch["masse_totale"]),
-            cg=np.array(ch["centre_de_gravite"], dtype=float),
-            moi=np.array(ch["moment_inertie"], dtype=float),
-            Cx=float(ch["coefficient_trainee"]),
-            Cz_front=float(ch["coefficient_portance"]["front"]),
-            Cz_rear=float(ch["coefficient_portance"]["rear"]),
-            mass_split_front=float(ch["repartition_masses"]["front"]),
-            # Vehicle dimensions with defaults for racing car
-            wheelbase=float(ch.get("empattement", 2.65)),  # Default wheelbase ~2.65m
-            track_width=float(ch.get("voie", 1.55)),       # Default track width ~1.55m
-            # Steering limitations with realistic defaults
-            max_steering_angle=float(ch.get("angle_braquage_max", 0.6)),      # ~34 degrees max
-            steering_speed_factor=float(ch.get("facteur_vitesse_braquage", 0.02)),  # Reduces steering at speed
-            min_turn_radius=float(ch.get("rayon_braquage_min", 6.0)),         # 6m minimum turn radius
-            torque_curve=np.array(pw["courbe_couple_moteur"], dtype=float),
-            rpm_limiter=float(pw["limiteur_rpm"]),
-            gear_ratios=np.array(pw["rapports_boite_de_vitesse"], dtype=float),
-            final_drive=float(pw["rapport_pont_final"]),
-            driveline_eff=float(pw["efficacite_transmission"]),
-            k_spring_front=float(st["raideur_suspension"]["front"]),
-            k_spring_rear=float(st["raideur_suspension"]["rear"]),
-            camber=float(st["geometrie_pneus"]["carrossage"]),
-            toe=float(st["geometrie_pneus"]["pincement"]),
-            mu0=float(st["modele_pneu_adherence"]["mu0"]),
-            alpha_muFz=float(st["modele_pneu_adherence"]["alpha"]),
-            brake_torque_max=float(br["couple_freinage_max"]),
-            brake_split_front=float(br["repartition_freinage"]["front"]),
+            mass=ch.masse_totale,
+            cg=np.array(ch.centre_de_gravite, dtype=float),
+            moi=np.array(ch.moment_inertie, dtype=float),
+            Cx=ch.coefficient_trainee,
+            Cz_front=ch.coefficient_portance.front,
+            Cz_rear=ch.coefficient_portance.rear,
+            mass_split_front=ch.repartition_masses.front,
+            wheelbase=ch.empattement,
+            track_width=ch.voie,
+            max_steering_angle=ch.angle_braquage_max,
+            steering_speed_factor=ch.facteur_vitesse_braquage,
+            min_turn_radius=ch.rayon_braquage_min,
+            torque_curve=np.array(pw.courbe_couple_moteur, dtype=float),
+            rpm_limiter=pw.limiteur_rpm,
+            gear_ratios=np.array(pw.rapports_boite_de_vitesse, dtype=float),
+            final_drive=pw.rapport_pont_final,
+            driveline_eff=pw.efficacite_transmission,
+            k_spring_front=st.raideur_suspension.front,
+            k_spring_rear=st.raideur_suspension.rear,
+            camber=st.geometrie_pneus.carrossage,
+            toe=st.geometrie_pneus.pincement,
+            mu0=st.modele_pneu_adherence.mu0,
+            alpha_muFz=st.modele_pneu_adherence.alpha,
+            brake_torque_max=br.couple_freinage_max,
+            brake_split_front=br.repartition_freinage.front,
         )
 
 

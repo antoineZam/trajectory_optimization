@@ -1,0 +1,4 @@
+# Default file paths configuration
+track: data/tracks/sample_track.json
+optimal_trajectory: data/optimal_traj.npy
+

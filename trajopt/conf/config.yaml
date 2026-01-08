@@ -1,0 +1,12 @@
+# Default Hydra configuration for TrajOpt
+# Override with: python main.py paths=custom vehicle=racing training=fast
+
+defaults:
+  - paths: default
+  - vehicle: default
+  - training: default
+  - _self_
+
+# Application mode: "optimize" or "simulate"
+mode: optimize
+

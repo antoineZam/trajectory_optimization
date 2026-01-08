@@ -1,12 +1,15 @@
 from __future__ import annotations
+
 import json
-import numpy as np
 from dataclasses import dataclass
-from shapely.geometry import LineString, Polygon, Point
-from shapely.affinity import rotate, translate
+
+import numpy as np
 from scipy.interpolate import splprep, splev
-from scipy.spatial.distance import cdist
 from scipy.spatial import cKDTree
+from shapely.affinity import rotate, translate
+from shapely.geometry import LineString, Point, Polygon
+
+from schemas import validate_track_data
 
 
 @dataclass
@@ -194,5 +197,27 @@ def save_track_json(track: Track, path: str) -> None:
 
 
 def load_track_json(path: str, interpolation_resolution: int = 2000) -> Track:
+    """Load and validate track from JSON file.
+    
+    Args:
+        path: Path to track JSON file.
+        interpolation_resolution: Resolution for track interpolation.
+        
+    Returns:
+        Validated Track instance.
+        
+    Raises:
+        pydantic.ValidationError: If track data fails validation.
+    """
     with open(path, "r", encoding="utf-8") as f:
-        return Track.from_json(json.load(f), interpolation_resolution=interpolation_resolution)
+        data = json.load(f)
+    
+    # Validate data with Pydantic schema
+    validated = validate_track_data(data)
+    
+    return Track(
+        name=validated.name,
+        width=validated.width,
+        centerline=np.array(validated.centerline, dtype=float),
+        interpolation_resolution=interpolation_resolution,
+    )
