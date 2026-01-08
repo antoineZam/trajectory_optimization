@@ -56,12 +56,23 @@ class RLConfig:
     max_yaw_rate: float = 3.0  # rad/s
     max_lookahead_distance: float = 100.0  # meters
     
-    # Reward parameters
-    lap_completion_bonus: float = 500.0
-    checkpoint_bonus: float = 50.0
-    offtrack_penalty: float = -10.0
-    illegal_position_penalty: float = -100.0
-    track_violation_penalty: float = -20.0
+    # Target speeds for reward shaping
+    target_speed: float = 25.0  # m/s (~90 km/h) - optimal racing speed
+    min_speed: float = 5.0  # m/s - minimum acceptable speed
+    
+    # Reward weights (tuned for stable learning)
+    # Dense rewards (per-step, should be small but positive for good behavior)
+    progress_reward_scale: float = 1.0  # Scale for distance-based progress
+    speed_reward_scale: float = 0.1  # Reward for maintaining good speed
+    centerline_reward_scale: float = 0.05  # Reward for staying centered
+    
+    # Milestone rewards (large, infrequent)
+    checkpoint_bonus: float = 100.0  # Per checkpoint
+    lap_completion_bonus: float = 1000.0  # For completing a lap
+    
+    # Penalties (should be smaller than positive rewards during normal operation)
+    off_track_penalty_scale: float = 0.2  # Per-step penalty when off track
+    termination_penalty: float = -50.0  # One-time penalty on termination
     
     # Checkpoint system
     num_checkpoints: int = 4
@@ -137,7 +148,9 @@ class RacingEnv(gym.Env):
         self.state: VehicleState | None = None
         self.step_count = 0
         self.track_progress = 0.0
+        self.last_track_progress = 0.0  # For computing progress delta
         self.lap_completed = False
+        self.total_distance_traveled = 0.0  # Track total distance for metrics
         
         # Checkpoint tracking
         self.checkpoints_hit: set = set()
@@ -147,6 +160,9 @@ class RacingEnv(gym.Env):
         self.prev_throttle = 0.0
         self.prev_brake = 0.0
         self.prev_steer = 0.0
+        
+        # Previous position for distance calculation
+        self._prev_position: np.ndarray | None = None
         
         # Track state caching (computed once per step for efficiency)
         self._cached_track_state: dict | None = None
@@ -518,6 +534,8 @@ class RacingEnv(gym.Env):
         # Reset episode state
         self.step_count = 0
         self.track_progress = 0.0
+        self.last_track_progress = 0.0
+        self.total_distance_traveled = 0.0
         self.lap_completed = False
         self.checkpoints_hit = set()
         self.current_checkpoint = 0
@@ -549,6 +567,9 @@ class RacingEnv(gym.Env):
             gear=2,
             rpm=2000.0,
         )
+        
+        # Initialize previous position for distance tracking
+        self._prev_position = np.array([x0, y0])
         
         # Start telemetry
         if self.telemetry:
@@ -591,6 +612,10 @@ class RacingEnv(gym.Env):
         # Check termination conditions
         terminated, truncated = self._check_termination(track_state)
         
+        # Apply termination penalty (only for bad terminations, not lap completion)
+        if terminated and not self.lap_completed:
+            reward += self.cfg.termination_penalty
+        
         # Log telemetry
         if self.telemetry:
             self._log_telemetry(track_state, throttle, brake, steer_command, steer_angle, reward, checkpoint_hit)
@@ -619,65 +644,118 @@ class RacingEnv(gym.Env):
         """
         Compute the reward for the current step.
         
-        The reward structure is simplified for cleaner learning:
-        1. Progress reward: Main signal for moving forward
-        2. Centerline reward: Stay near the racing line
-        3. Survival reward: Small bonus for staying on track
-        4. Milestone bonuses: Checkpoints and lap completion
-        5. Penalties: Off-track violations
+        Reward Design Principles:
+        - Dense positive rewards for good behavior (progress, speed, centerline)
+        - Sparse large bonuses for milestones (checkpoints, lap completion)
+        - Small penalties that don't dominate the positive signal
+        - Net positive reward during normal on-track driving
+        
+        Expected reward magnitudes per step at 25 m/s on centerline:
+        - Progress: ~0.5 (main signal)
+        - Speed: ~0.1 (bonus for good speed)  
+        - Centerline: ~0.05 (bonus for being centered)
+        - Total: ~0.65 per step (positive reinforcement)
         """
         reward = 0.0
-        
+        current_pos = np.array([self.state.x, self.state.y])
         center_dist = track_state["center_dist"]
         half_width = self.track.width / 2.0
+        on_track = center_dist <= half_width
         
-        # 1. Progress reward (main learning signal)
-        # Reward for moving in the correct direction along the track
+        # =====================================================================
+        # 1. PROGRESS REWARD (Primary learning signal)
+        # =====================================================================
+        # Reward based on actual track progress (more robust than velocity)
+        current_progress = track_state["track_progress"]
+        
+        # Handle wraparound at lap completion
+        progress_delta = current_progress - self.last_track_progress
+        if progress_delta < -0.5:  # Wrapped around (e.g., 0.99 -> 0.01)
+            progress_delta += 1.0
+        elif progress_delta > 0.5:  # Went backwards past start
+            progress_delta -= 1.0
+        
+        # Scale progress to reward (~0.5 per step at good speed)
+        # Full lap = 1.0, typical episode = 8000 steps, so per-step progress ~ 0.0001
+        # We scale up significantly to make it the dominant signal
+        progress_reward = progress_delta * 5000.0 * self.cfg.progress_reward_scale
+        
+        # Only reward forward progress, don't penalize backwards (let termination handle that)
+        if progress_reward > 0:
+            reward += progress_reward
+        
+        # Update for next step
+        self.last_track_progress = current_progress
+        
+        # Also track distance for telemetry
+        if self._prev_position is not None:
+            distance = np.linalg.norm(current_pos - self._prev_position)
+            self.total_distance_traveled += distance
+        self._prev_position = current_pos.copy()
+        
+        # =====================================================================
+        # 2. SPEED REWARD (Encourage maintaining good racing speed)
+        # =====================================================================
         speed = np.hypot(self.state.vx, self.state.vy)
         
-        # Compute velocity component along track direction
-        velocity_vec = np.array([self.state.vx, self.state.vy])
-        cos_yaw, sin_yaw = np.cos(self.state.yaw), np.sin(self.state.yaw)
-        world_velocity = np.array([
-            velocity_vec[0] * cos_yaw - velocity_vec[1] * sin_yaw,
-            velocity_vec[0] * sin_yaw + velocity_vec[1] * cos_yaw,
-        ])
+        if on_track:
+            # Reward for being at or above target speed
+            if speed >= self.cfg.target_speed:
+                # Bonus for being fast (capped to avoid rewarding reckless speed)
+                speed_bonus = min(speed / self.cfg.target_speed, 1.5) - 1.0
+                speed_reward = speed_bonus * self.cfg.speed_reward_scale
+            elif speed >= self.cfg.min_speed:
+                # Proportional reward for acceptable speed range
+                speed_ratio = (speed - self.cfg.min_speed) / (self.cfg.target_speed - self.cfg.min_speed)
+                speed_reward = speed_ratio * self.cfg.speed_reward_scale * 0.5
+            else:
+                # Small penalty for being too slow (but not harsh)
+                speed_reward = -0.02 * (self.cfg.min_speed - speed) / self.cfg.min_speed
+            
+            reward += speed_reward
         
-        track_direction = track_state["tangent"]
-        forward_velocity = np.dot(world_velocity, track_direction)
-        
-        # Reward forward progress (scaled to be meaningful per step)
-        progress_reward = forward_velocity * 0.01  # ~0.25 per step at 25 m/s
-        reward += progress_reward
-        
-        # 2. Centerline reward (stay near racing line)
-        if center_dist <= half_width:
-            # On track: small reward for being near center
-            centerline_reward = 0.02 * (1.0 - center_dist / half_width)
-            reward += centerline_reward
+        # =====================================================================
+        # 3. CENTERLINE REWARD (Encourage racing line adherence)
+        # =====================================================================
+        if on_track:
+            # Reward inversely proportional to distance from centerline
+            # Max reward at center, zero reward at edge
+            centerline_bonus = (1.0 - center_dist / half_width) * self.cfg.centerline_reward_scale
+            reward += centerline_bonus
         else:
-            # Off track: penalty proportional to distance
-            off_track_penalty = -0.05 * (center_dist / half_width - 1.0)
+            # Gentle penalty for being off track (termination handles severe cases)
+            off_track_amount = (center_dist - half_width) / half_width
+            off_track_penalty = -self.cfg.off_track_penalty_scale * min(off_track_amount, 2.0)
             reward += off_track_penalty
         
-        # 3. Survival reward (encourage staying alive)
-        if center_dist <= half_width:
-            reward += 0.01
-        
-        # 4. Checkpoint milestone
+        # =====================================================================
+        # 4. CHECKPOINT MILESTONE BONUS
+        # =====================================================================
         if checkpoint_hit:
             checkpoint_reward = self.cfg.checkpoint_bonus
             if self.curriculum:
                 reward_params = self.curriculum.get_reward_parameters()
                 checkpoint_reward *= reward_params["checkpoint_multiplier"]
             reward += checkpoint_reward
-            print(f"CHECKPOINT {len(self.checkpoints_hit)} HIT! (+{checkpoint_reward:.0f})")
+            print(f"CHECKPOINT {len(self.checkpoints_hit)}/{self.cfg.num_checkpoints} HIT! (+{checkpoint_reward:.0f})")
         
-        # 5. Lap completion
+        # =====================================================================
+        # 5. LAP COMPLETION BONUS
+        # =====================================================================
         if len(self.checkpoints_hit) >= self.cfg.num_checkpoints and not self.lap_completed:
             self.lap_completed = True
             reward += self.cfg.lap_completion_bonus
-            print(f"LAP COMPLETED! Steps: {self.step_count}")
+            avg_speed = self.total_distance_traveled / (self.step_count * self.cfg.dt) if self.step_count > 0 else 0
+            print(f"LAP COMPLETED! Steps: {self.step_count}, Avg Speed: {avg_speed:.1f} m/s")
+        
+        # =====================================================================
+        # 6. CURRICULUM PROGRESS BONUS (Extra encouragement in early stages)
+        # =====================================================================
+        if self.curriculum and on_track:
+            reward_params = self.curriculum.get_reward_parameters()
+            progress_bonus = reward_params.get("progress_bonus", 0.0)
+            if progress_bonus > 0:
+                reward += progress_bonus
         
         return reward
     

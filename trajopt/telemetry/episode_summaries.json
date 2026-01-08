@@ -2,21 +2,21 @@
   {
     "episode": 1,
     "lap_completed": false,
-    "lap_time": 0.2686781883239746,
+    "lap_time": 0.5020129680633545,
     "checkpoints_hit": 1,
     "max_checkpoints": 4,
-    "average_speed": 12.592763449503975,
-    "max_speed": 34.88140559924024,
-    "total_distance": 45.60215989268774,
-    "average_center_distance": 3.6156367103944893,
-    "average_racing_line_distance": 3.4357222499833644,
-    "time_on_track": 98.66666666666667,
-    "average_steering_magnitude": 0.8991565962632497,
+    "average_speed": 6.237371034028304,
+    "max_speed": 10.94396397014733,
+    "total_distance": 70.93974547169064,
+    "average_center_distance": 2.4104269457763516,
+    "average_racing_line_distance": 2.4104269457763516,
+    "time_on_track": 99.56140350877193,
+    "average_steering_magnitude": 0.3395700326614213,
     "max_steering_used": 34.37746770784939,
-    "steering_smoothness": 0.007417165237994344,
-    "total_reward": -985.9793858631957,
-    "average_reward_per_step": -13.14639181150927,
+    "steering_smoothness": 0.32559903506578614,
+    "total_reward": 587.284990912735,
+    "average_reward_per_step": 2.575811363652345,
     "termination_reason": "wheel_violation",
-    "training_phase": "learning"
+    "training_phase": "standard"
   }
 ]
