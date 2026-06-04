@@ -157,8 +157,7 @@ def create_vec_env(
                      If False, use DummyVecEnv (sequential, for debugging).
         
     Returns:
-        Tuple of (vectorized_env, eval_env) where eval_env is a single DummyVecEnv
-        for deterministic evaluation.
+        Vectorized training environment (optionally wrapped with VecNormalize).
     """
     n_envs = training_cfg.n_envs
     
@@ -197,18 +196,7 @@ def create_vec_env(
         )
         print(f"  Normalization: obs={training_cfg.normalize_obs}, reward={training_cfg.normalize_reward}")
     
-    # Create a separate eval environment (single, deterministic)
-    eval_env = DummyVecEnv([
-        make_env_factory(
-            track_path=track_path,
-            vehicle_cfg=vehicle_cfg,
-            interpolation_resolution=interpolation_resolution,
-            enable_telemetry=True,
-            enable_curriculum=False,  # No curriculum for eval
-        )
-    ])
-    
-    return vec_env, eval_env
+    return vec_env
 
 
 def _get_activation_fn(name: str):
@@ -278,9 +266,9 @@ def train_and_export(
     # Print training configuration
     _print_training_info(cfg, track, spec, use_subproc)
     
-    # Create vectorized environments
+    # Create vectorized training environment
     print("\nInitializing vectorized environments...")
-    env, eval_env = create_vec_env(
+    env = create_vec_env(
         track_path=track_path,
         vehicle_cfg=veh_cfg,
         training_cfg=cfg,
@@ -329,11 +317,39 @@ def train_and_export(
     
     print("\nTRAINING COMPLETED")
     
-    # Close training environment
+    # Build eval environment with the same normalization stats as training
+    print("\nGenerating optimal trajectory (looking for completed lap)...")
+    raw_eval_env = DummyVecEnv([
+        make_env_factory(
+            track_path=track_path,
+            vehicle_cfg=veh_cfg,
+            interpolation_resolution=interpolation_resolution,
+            enable_telemetry=True,
+            enable_curriculum=False,
+        )
+    ])
+    
+    # Wrap eval env with VecNormalize using training stats (no reward normalization for eval)
+    if isinstance(env, VecNormalize):
+        eval_env = VecNormalize(
+            raw_eval_env,
+            norm_obs=env.norm_obs,
+            norm_reward=False,
+            clip_obs=env.clip_obs,
+        )
+        eval_env.obs_rms = env.obs_rms
+        eval_env.training = False
+    else:
+        eval_env = raw_eval_env
+    
+    # Close training environment (after copying stats)
     env.close()
     
-    # Rollout trajectory - try to get a completed lap
-    print("\nGenerating optimal trajectory (looking for completed lap)...")
+    # Access the underlying RacingEnv (inside DummyVecEnv, inside VecNormalize)
+    def _get_racing_env():
+        if isinstance(eval_env, VecNormalize):
+            return eval_env.venv.envs[0]
+        return eval_env.envs[0]
     
     best_trajectory = None
     best_checkpoints = 0
@@ -347,44 +363,41 @@ def train_and_export(
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = eval_env.step(action)
-            s = eval_env.envs[0].state
+            s = _get_racing_env().state
             xs.append(s.x)
             ys.append(s.y)
             vs.append(np.hypot(s.vx, s.vy))
             done = bool(done[0])
         
-        # Check episode results
-        racing_env = eval_env.envs[0]
+        racing_env = _get_racing_env()
         checkpoints_hit = len(racing_env.checkpoints_hit) if hasattr(racing_env, 'checkpoints_hit') else 0
         lap_completed = racing_env.lap_completed if hasattr(racing_env, 'lap_completed') else False
         
         print(f"  Attempt {attempt + 1}/{max_attempts}: {checkpoints_hit}/4 checkpoints, "
               f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} steps")
         
-        # Keep track of best trajectory
         if checkpoints_hit > best_checkpoints:
             best_checkpoints = checkpoints_hit
             best_trajectory = (xs, ys, vs, lap_completed, checkpoints_hit)
         
-        # If we completed a lap, use this trajectory
         if lap_completed:
-            print(f"\n✅ Successfully captured completed lap trajectory!")
+            print(f"\nSuccessfully captured completed lap trajectory!")
             break
     else:
-        # No completed lap found, use the best attempt
         if best_trajectory is not None:
             xs, ys, vs, lap_completed, checkpoints_hit = best_trajectory
-            print(f"\n⚠️ No completed lap in {max_attempts} attempts. "
+            print(f"\nNo completed lap in {max_attempts} attempts. "
                   f"Using best trajectory with {checkpoints_hit}/4 checkpoints.")
         else:
-            print(f"\n❌ Failed to generate any valid trajectory.")
+            print(f"\nFailed to generate any valid trajectory.")
     
     # Export telemetry from eval environment
-    if hasattr(eval_env.envs[0], 'telemetry') and eval_env.envs[0].telemetry:
+    racing_env = _get_racing_env()
+    if hasattr(racing_env, 'telemetry') and racing_env.telemetry:
         print("Exporting telemetry data...")
-        eval_env.envs[0].telemetry.save_summaries()
+        racing_env.telemetry.save_summaries()
         try:
-            eval_env.envs[0].telemetry.export_csv()
+            racing_env.telemetry.export_csv()
         except ImportError:
             print("   Note: Install pandas for CSV export")
         print("   Telemetry data saved to ./telemetry/ directory")

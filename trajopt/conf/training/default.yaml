@@ -26,7 +26,7 @@ network:
 env:
   n_envs: 4            # Number of parallel environments
   normalize_obs: true  # Normalize observations
-  normalize_reward: true  # Normalize rewards
+  normalize_reward: false  # Disabled: milestones must remain visible to the agent
   clip_obs: 10.0       # Observation clipping threshold
   clip_reward: 10.0    # Reward clipping threshold
 
