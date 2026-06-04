@@ -709,18 +709,16 @@ class RacingEnv(gym.Env):
             reward += speed_reward
         
         # =====================================================================
-        # 3. CENTERLINE REWARD (Encourage racing line adherence)
+        # 3. BOUNDARY PENALTY (penalise being near or beyond the track edge,
+        #    but don't reward the centerline -- let the agent find its own racing line)
         # =====================================================================
-        if on_track:
-            # Reward inversely proportional to distance from centerline
-            # Max reward at center, zero reward at edge
-            centerline_bonus = (1.0 - center_dist / half_width) * self.cfg.centerline_reward_scale
-            reward += centerline_bonus
-        else:
-            # Gentle penalty for being off track (termination handles severe cases)
+        if not on_track:
             off_track_amount = (center_dist - half_width) / half_width
-            off_track_penalty = -self.cfg.off_track_penalty_scale * min(off_track_amount, 2.0)
-            reward += off_track_penalty
+            reward -= self.cfg.off_track_penalty_scale * min(off_track_amount, 2.0)
+        elif center_dist > half_width * 0.8:
+            # Gentle ramp starting at 80% of half-width (near the edge)
+            edge_proximity = (center_dist - half_width * 0.8) / (half_width * 0.2)
+            reward -= self.cfg.centerline_reward_scale * edge_proximity
         
         # =====================================================================
         # 4. CHECKPOINT MILESTONE BONUS
