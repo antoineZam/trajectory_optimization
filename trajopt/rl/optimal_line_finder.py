@@ -366,6 +366,15 @@ def train_and_export(
     
     print("\nTRAINING COMPLETED")
     
+    # Save model and normalization stats
+    import os
+    model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
+    os.makedirs(model_dir, exist_ok=True)
+    model.save(os.path.join(model_dir, "ppo_racing"))
+    if isinstance(env, VecNormalize):
+        env.save(os.path.join(model_dir, "vec_normalize.pkl"))
+    print(f"Model saved to {model_dir}/")
+    
     # Build eval environment with the same normalization stats as training
     print("\nGenerating optimal trajectory (looking for completed lap)...")
     raw_eval_env = DummyVecEnv([
