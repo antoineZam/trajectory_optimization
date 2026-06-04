@@ -6,6 +6,7 @@ Usage:
     poetry run python main.py mode=simulate            # Simulate mode
     poetry run python main.py training=fast            # Fast training preset
     poetry run python main.py training.timesteps=100000  # Override specific param
+    poetry run python main.py training.learning_rate=0.001  # Custom learning rate
 """
 from __future__ import annotations
 
@@ -35,29 +36,30 @@ def mode_optimize(cfg: DictConfig) -> None:
 
     track_path = cfg.paths.track
     output_path = cfg.paths.optimal_trajectory
-    timesteps = cfg.training.timesteps
-    n_envs = cfg.training.env.n_envs
 
     ensure_sample_track(track_path)
 
-    # Convert vehicle config to dict for compatibility
+    # Convert configs to dict for compatibility
     vehicle_spec = OmegaConf.to_container(cfg.vehicle, resolve=True)
+    training_cfg = OmegaConf.to_container(cfg.training, resolve=True)
 
+    # Train and export trajectory
     traj = train_and_export(
-        track_path,
-        vehicle_spec,
-        output_path,
-        timesteps=timesteps,
-        n_envs=n_envs,
+        track_path=track_path,
+        vehicle_cfg=vehicle_spec,
+        out_path=output_path,
+        training_cfg=training_cfg,
         use_subproc=True,
     )
 
+    # Visualize result
     tr = load_track_json(track_path)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     plot_track(ax, tr.centerline, tr.left_boundary, tr.right_boundary)
     plot_trajectories(ax, optimal=traj[:, :2])
-    ax.set_title("Optimized racing line")
+    ax.set_title("Optimized Racing Line")
+    plt.tight_layout()
     plt.show()
 
 
@@ -80,18 +82,20 @@ def mode_simulate(cfg: DictConfig) -> None:
     pred = past[-1] + (past[-1] - past[-20]) * np.linspace(0, 1, 30)[:, None]
     pred += np.random.normal(scale=0.5, size=pred.shape)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     plot_track(ax, tr.centerline, tr.left_boundary, tr.right_boundary)
     plot_trajectories(ax, optimal=traj[:, :2], past=past, pred=pred)
-    ax.set_title("Simulation: past vs predicted (demo)")
+    ax.set_title("Simulation: Past vs Predicted (Demo)")
+    plt.tight_layout()
     plt.show()
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point with Hydra configuration."""
-    # Print resolved config for debugging
-    print(OmegaConf.to_yaml(cfg))
+    # Print resolved config for debugging (only in verbose mode)
+    if cfg.get("verbose", False):
+        print(OmegaConf.to_yaml(cfg))
 
     # Change to original working directory (Hydra changes cwd by default)
     os.chdir(hydra.utils.get_original_cwd())

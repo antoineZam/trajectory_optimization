@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>WorkForge</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- Main view -->
+  <div id="mainView">
+    <div class="header">
+      <div class="header-left">
+        <div class="logo">⚙</div>
+        <div>
+          <h1 class="title">WorkForge</h1>
+          <span class="subtitle">Ta boîte à outils</span>
+        </div>
+      </div>
+      <div class="tools-count">
+        <span id="activeCount">0</span> actif<span id="activePlural"></span>
+      </div>
+    </div>
+    <div class="tools-list" id="toolsList"></div>
+    <div class="footer">
+      <span id="footerStatus">Tous les outils sont désactivés.</span>
+    </div>
+  </div>
+
+  <!-- Detail panel (hidden by default) -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <button class="back-btn" id="backBtn">← Retour</button>
+      <span class="detail-title" id="detailTitle"></span>
+    </div>
+    <div class="detail-body" id="detailBody"></div>
+  </div>
+
+  <script src="tools/registry.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,26 +1,37 @@
 # Fast training configuration for quick experiments
-# Uses more parallel environments for faster iteration
+# Uses more parallel environments and fewer timesteps
 
-timesteps: 50000
+# Reduced timesteps for faster iteration
+timesteps: 100000
 
-algorithm: PPO
-learning_rate: 0.001
-n_steps: 1024
-batch_size: 256
-n_epochs: 5
+# PPO hyperparameters optimized for speed
+learning_rate: 0.0005  # Slightly higher for faster learning
+n_steps: 1024          # Fewer steps for more frequent updates
+batch_size: 128        # Smaller batch for faster updates
+n_epochs: 5            # Fewer epochs per update
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
-ent_coef: 0.01
+ent_coef: 0.02         # Slightly more exploration
 vf_coef: 0.5
 max_grad_norm: 0.5
 
-# Vectorized environment settings
+# Smaller network for faster training
+network:
+  pi_layers: [128, 128]
+  vf_layers: [128, 128]
+  activation: tanh
+
+# More parallel environments for faster sample collection
 env:
-  n_envs: 8  # More parallel envs for faster training
+  n_envs: 8
   normalize_obs: true
   normalize_reward: true
+  clip_obs: 10.0
+  clip_reward: 10.0
 
+# Less verbose logging
+verbose: 1
+tensorboard_log: null
 log_interval: 5
-save_freq: 10000
-
+save_freq: 25000

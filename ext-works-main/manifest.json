@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "WorkForge",
+  "version": "1.0.0",
+  "description": "Ta boîte à outils personnelle pour le navigateur.",
+  "permissions": ["storage", "alarms", "scripting", "tabs", "sidePanel"],
+  "side_panel": {
+    "default_path": "tools/time-bomb/game.html"
+  },
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["tools/time-bomb/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# Long training configuration for thorough optimization
+# Extended training with larger networks for best results
+
+# Extended training timesteps
+timesteps: 2000000
+
+# PPO hyperparameters for stable long-term training
+learning_rate: 0.0001   # Lower learning rate for stability
+n_steps: 4096           # More steps for better gradient estimates
+batch_size: 512         # Larger batch for stable updates
+n_epochs: 15            # More epochs to extract value from samples
+gamma: 0.995            # Slightly higher discount for long-horizon planning
+gae_lambda: 0.98        # Higher lambda for longer credit assignment
+clip_range: 0.15        # Tighter clipping for stability
+ent_coef: 0.005         # Less exploration in later training
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+# Larger network for complex behaviors
+network:
+  pi_layers: [512, 256, 256, 128]
+  vf_layers: [512, 256, 256, 128]
+  activation: tanh
+
+# Standard parallel environments
+env:
+  n_envs: 4
+  normalize_obs: true
+  normalize_reward: true
+  clip_obs: 10.0
+  clip_reward: 10.0
+
+# Detailed logging for analysis
+verbose: 1
+tensorboard_log: null  # Set path here if tensorboard is installed
+log_interval: 10
+save_freq: 100000

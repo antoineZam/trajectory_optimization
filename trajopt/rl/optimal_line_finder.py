@@ -2,14 +2,15 @@
 Optimal racing line finder using Reinforcement Learning.
 
 Uses vectorized environments with SubprocVecEnv for parallel training
-across multiple CPU cores.
+across multiple CPU cores. All hyperparameters are configurable through
+Hydra configuration.
 """
 from __future__ import annotations
 
 import json
 import multiprocessing as mp
-import os
-from typing import Callable, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Union
 
 import numpy as np
 import torch.nn as nn
@@ -20,8 +21,89 @@ from envs.rl_environment import RacingEnv
 from physics.physics_engine import VehicleSpec, get_gear_speed_info, get_steering_info
 from utils.track import load_track_json
 
+
 # Default number of parallel environments
 DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
+
+
+@dataclass
+class TrainingConfig:
+    """Training configuration with sensible defaults.
+    
+    These defaults can be overridden by Hydra configuration.
+    """
+    # Total training timesteps
+    timesteps: int = 500_000
+    
+    # PPO hyperparameters
+    learning_rate: float = 3e-4
+    n_steps: int = 2048
+    batch_size: int = 256
+    n_epochs: int = 10
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_range: float = 0.2
+    ent_coef: float = 0.01
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    
+    # Network architecture
+    pi_layers: tuple = (256, 256, 128)
+    vf_layers: tuple = (256, 256, 128)
+    activation: str = "tanh"
+    
+    # Environment settings
+    n_envs: int = DEFAULT_N_ENVS
+    normalize_obs: bool = True
+    normalize_reward: bool = True
+    clip_obs: float = 10.0
+    clip_reward: float = 10.0
+    
+    # Logging
+    verbose: int = 1
+    tensorboard_log: Optional[str] = None
+    
+    @classmethod
+    def from_dict(cls, config: Dict[str, Any]) -> "TrainingConfig":
+        """Create TrainingConfig from a dictionary (e.g., from Hydra)."""
+        # Extract values with defaults
+        kwargs = {}
+        
+        # Direct mappings
+        direct_fields = [
+            "timesteps", "learning_rate", "n_steps", "batch_size", "n_epochs",
+            "gamma", "gae_lambda", "clip_range", "ent_coef", "vf_coef", 
+            "max_grad_norm", "verbose", "tensorboard_log"
+        ]
+        for field in direct_fields:
+            if field in config:
+                kwargs[field] = config[field]
+        
+        # Nested env config
+        if "env" in config:
+            env_cfg = config["env"]
+            if "n_envs" in env_cfg:
+                kwargs["n_envs"] = env_cfg["n_envs"]
+            if "normalize_obs" in env_cfg:
+                kwargs["normalize_obs"] = env_cfg["normalize_obs"]
+            if "normalize_reward" in env_cfg:
+                kwargs["normalize_reward"] = env_cfg["normalize_reward"]
+            if "clip_obs" in env_cfg:
+                kwargs["clip_obs"] = env_cfg["clip_obs"]
+            if "clip_reward" in env_cfg:
+                kwargs["clip_reward"] = env_cfg["clip_reward"]
+        
+        # Network architecture
+        if "network" in config:
+            net_cfg = config["network"]
+            if "pi_layers" in net_cfg:
+                kwargs["pi_layers"] = tuple(net_cfg["pi_layers"])
+            if "vf_layers" in net_cfg:
+                kwargs["vf_layers"] = tuple(net_cfg["vf_layers"])
+            if "activation" in net_cfg:
+                kwargs["activation"] = net_cfg["activation"]
+        
+        return cls(**kwargs)
 
 
 def make_env_factory(
@@ -60,26 +142,26 @@ def make_env_factory(
 def create_vec_env(
     track_path: str,
     vehicle_cfg: dict,
-    n_envs: int = DEFAULT_N_ENVS,
+    training_cfg: TrainingConfig,
     interpolation_resolution: int = 2000,
     use_subproc: bool = True,
-    normalize: bool = True,
 ) -> tuple:
     """Create a vectorized environment for parallel training.
     
     Args:
         track_path: Path to track JSON file.
         vehicle_cfg: Vehicle configuration dictionary.
-        n_envs: Number of parallel environments.
+        training_cfg: Training configuration with env settings.
         interpolation_resolution: Track interpolation resolution.
         use_subproc: If True, use SubprocVecEnv for true parallelism.
                      If False, use DummyVecEnv (sequential, for debugging).
-        normalize: If True, wrap with VecNormalize for observation/reward normalization.
         
     Returns:
         Tuple of (vectorized_env, eval_env) where eval_env is a single DummyVecEnv
         for deterministic evaluation.
     """
+    n_envs = training_cfg.n_envs
+    
     # Create environment factories
     # Only enable telemetry on the first environment to avoid conflicts
     env_fns = [
@@ -105,15 +187,15 @@ def create_vec_env(
         print(f"  Using DummyVecEnv with {n_envs} sequential environments")
     
     # Optionally wrap with VecNormalize for better training stability
-    if normalize:
+    if training_cfg.normalize_obs or training_cfg.normalize_reward:
         vec_env = VecNormalize(
             vec_env,
-            norm_obs=True,
-            norm_reward=True,
-            clip_obs=10.0,
-            clip_reward=10.0,
+            norm_obs=training_cfg.normalize_obs,
+            norm_reward=training_cfg.normalize_reward,
+            clip_obs=training_cfg.clip_obs,
+            clip_reward=training_cfg.clip_reward,
         )
-        print("  Observation and reward normalization enabled")
+        print(f"  Normalization: obs={training_cfg.normalize_obs}, reward={training_cfg.normalize_reward}")
     
     # Create a separate eval environment (single, deterministic)
     eval_env = DummyVecEnv([
@@ -129,14 +211,28 @@ def create_vec_env(
     return vec_env, eval_env
 
 
+def _get_activation_fn(name: str):
+    """Get PyTorch activation function by name."""
+    activations = {
+        "tanh": nn.Tanh,
+        "relu": nn.ReLU,
+        "leaky_relu": nn.LeakyReLU,
+        "elu": nn.ELU,
+        "gelu": nn.GELU,
+    }
+    return activations.get(name.lower(), nn.Tanh)
+
+
 def train_and_export(
     track_path: str,
     vehicle_cfg: Union[str, dict],
     out_path: str,
-    timesteps: int = 500_000,
+    training_cfg: Optional[Union[Dict[str, Any], TrainingConfig]] = None,
     interpolation_resolution: int = 2000,
-    n_envs: int = DEFAULT_N_ENVS,
     use_subproc: bool = True,
+    # Legacy parameters for backwards compatibility
+    timesteps: Optional[int] = None,
+    n_envs: Optional[int] = None,
 ):
     """Train RL agent and export optimal trajectory.
     
@@ -144,14 +240,29 @@ def train_and_export(
         track_path: Path to track JSON file.
         vehicle_cfg: Either a path to vehicle config JSON or a config dict.
         out_path: Path to save the optimal trajectory.
-        timesteps: Total training timesteps.
+        training_cfg: Training configuration (dict from Hydra or TrainingConfig).
         interpolation_resolution: Track interpolation resolution.
-        n_envs: Number of parallel environments for training.
         use_subproc: Whether to use SubprocVecEnv (True) or DummyVecEnv (False).
+        timesteps: (Legacy) Override total timesteps.
+        n_envs: (Legacy) Override number of environments.
     
     Returns:
         Optimal trajectory as numpy array.
     """
+    # Build training config
+    if training_cfg is None:
+        cfg = TrainingConfig()
+    elif isinstance(training_cfg, dict):
+        cfg = TrainingConfig.from_dict(training_cfg)
+    else:
+        cfg = training_cfg
+    
+    # Apply legacy overrides if provided
+    if timesteps is not None:
+        cfg.timesteps = timesteps
+    if n_envs is not None:
+        cfg.n_envs = n_envs
+    
     # Load track for info display
     track = load_track_json(track_path, interpolation_resolution=interpolation_resolution)
     
@@ -165,124 +276,108 @@ def train_and_export(
     spec = VehicleSpec.from_config(veh_cfg)
     
     # Print training configuration
-    print("=" * 60)
-    print("TRAJECTORY OPTIMIZATION - VECTORIZED PARALLEL TRAINING")
-    print("=" * 60)
-    print(f"Training timesteps: {timesteps:,}")
-    print(f"Parallel environments: {n_envs}")
-    print(f"Effective samples per update: {n_envs * 2048:,}")
-    print(f"Track points: {len(track.centerline)}")
-    print(f"Interpolated track points: {track.interpolation_resolution}")
-    print(f"Track width: {track.width}m")
-    print(f"Checkpoints: 4 (every {len(track.centerline)//4} track points)")
-    print(f"Vehicle wheelbase: {spec.wheelbase}m, track width: {spec.track_width}m")
-    print("FIXED ACTION SPACE:")
-    print(f"  - Agent steer_command [-1, 1] → steering angle [-{np.degrees(spec.max_steering_angle):.1f}°, +{np.degrees(spec.max_steering_angle):.1f}°]")
-    print("  - No more unrealistic 57° steering commands!")
-    print("REALISTIC VEHICLE DYNAMICS:")
-    print("  - Speed-dependent steering limitations (agent learns to work within limits)")
-    print(f"  - Max steering angle: {spec.max_steering_angle:.2f} rad ({np.degrees(spec.max_steering_angle):.1f}°)")
-    print(f"  - Minimum turn radius: {spec.min_turn_radius}m")
-    print("  - Physics engine applies additional speed-based clipping")
-    print("OBSERVATION SPACE (21 Dimensions - Track-Relative):")
-    print("  Vehicle Dynamics (5D): speed, lateral velocity, yaw rate, slip angle, steering")
-    print("  Track Position (5D): lateral offset (Frenet), heading error, progress,")
-    print("     left/right boundary distances - all normalized to [-1, 1] or [0, 1]")
-    print("  Lookahead (8D): 4 points ahead in vehicle-relative polar coordinates")
-    print("     (distance, angle) - tells agent about upcoming track geometry")
-    print("  Control Context (3D): previous throttle, brake, steering for smooth control")
-    print("CURRICULUM LEARNING SYSTEM:")
-    print("  Stage 1: Driving School (4x wide track, never terminate)")
-    print("  Stage 2: Learner's Permit (2.5x wide, soft termination)")
-    print("  Stage 3: Provisional License (1.8x wide, normal rules)")
-    print("  Stage 4: Full License (1.2x wide, realistic racing)")
-    print("  Stage 5: Racing Pro (1x wide, professional level)")
-    print("VECTORIZED TRAINING:")
-    print(f"  - {n_envs} parallel simulations running simultaneously")
-    print(f"  - {'SubprocVecEnv (multi-process)' if use_subproc else 'DummyVecEnv (single-process)'}")
-    print("  - VecNormalize for observation/reward scaling")
-    print("  - ~{:.1f}x faster training vs single environment".format(n_envs * 0.7))
-    
-    gear_info = get_gear_speed_info(spec)
-    print(f"\nREALISTIC GEAR-BASED SPEED LIMITS (RPM limited):")
-    print(f"  RPM Limiter: {gear_info['rpm_limiter']:,.0f} RPM")
-    print(f"  Final Drive: {gear_info['final_drive']:.2f}:1")
-    print(f"  Absolute Top Speed: {gear_info['absolute_top_speed_kmh']:.1f} km/h ({gear_info['absolute_top_speed_ms']:.1f} m/s)")
-    print(f"  Effective Top Speed: {gear_info['top_speed_kmh']:.1f} km/h ({gear_info['top_speed_ms']:.1f} m/s)")
-    print("  Gear Speed Limits:")
-    for gear in range(1, len(spec.gear_ratios) + 1):
-        gear_data = gear_info['gear_speeds'][f'gear_{gear}']
-        print(f"    Gear {gear}: {gear_data['max_speed_kmh']:5.1f} km/h ({gear_data['max_speed_ms']:4.1f} m/s) @ {gear_data['rpm_at_max_speed']:,.0f} RPM")
-    
-    print("\nSTEERING LIMITATIONS (Speed-dependent):")
-    for speed_kmh in [0, 30, 60, 120, 180]:
-        if speed_kmh <= gear_info['top_speed_kmh']:
-            speed_ms = speed_kmh / 3.6
-            info = get_steering_info(spec, speed_ms)
-            reduction = info['max_steering_angle_deg'] / np.degrees(spec.max_steering_angle)
-            print(f"  {speed_kmh:3d} km/h: max {info['max_steering_angle_deg']:4.1f}° ({reduction:4.1%} of base) → {info['turn_radius_m']:4.1f}m radius")
-    print("=" * 60)
+    _print_training_info(cfg, track, spec, use_subproc)
     
     # Create vectorized environments
     print("\nInitializing vectorized environments...")
     env, eval_env = create_vec_env(
         track_path=track_path,
         vehicle_cfg=veh_cfg,
-        n_envs=n_envs,
+        training_cfg=cfg,
         interpolation_resolution=interpolation_resolution,
         use_subproc=use_subproc,
-        normalize=True,
     )
     
-    # Custom hyperparameters optimized for vectorized training
+    # Build policy kwargs from config
     policy_kwargs = dict(
-        activation_fn=nn.Tanh,
-        net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128])  # Larger network for parallel data
+        activation_fn=_get_activation_fn(cfg.activation),
+        net_arch=dict(
+            pi=list(cfg.pi_layers),
+            vf=list(cfg.vf_layers),
+        )
     )
-
-    model = PPO(
-        "MlpPolicy", 
-        env, 
-        policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,        # Standard PPO learning rate
-        n_steps=2048,              # Steps per environment before update
-        batch_size=256,            # Larger batch for vectorized training
-        n_epochs=10,               # Epochs per update
-        gamma=0.99,                # Discount factor
-        gae_lambda=0.95,           # GAE lambda
-        clip_range=0.2,            # PPO clip range
-        ent_coef=0.01,             # Entropy coefficient for exploration
-        vf_coef=0.5,               # Value function coefficient
-        max_grad_norm=0.5,         # Gradient clipping
-        verbose=1, 
-        tensorboard_log=None,
-        device="auto",             # Auto-select CPU/GPU
-    )
-
-    print(f"\nStarting training for {timesteps:,} timesteps...")
-    print(f"Expected updates: {timesteps // (n_envs * 2048)}")
     
-    model.learn(total_timesteps=timesteps)
+    # Handle tensorboard_log - set to None if empty or not a valid path
+    tb_log = cfg.tensorboard_log
+    if tb_log is not None and (tb_log == "" or tb_log == "null"):
+        tb_log = None
+    
+    # Create PPO model with config hyperparameters
+    model = PPO(
+        "MlpPolicy",
+        env,
+        policy_kwargs=policy_kwargs,
+        learning_rate=cfg.learning_rate,
+        n_steps=cfg.n_steps,
+        batch_size=cfg.batch_size,
+        n_epochs=cfg.n_epochs,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip_range=cfg.clip_range,
+        ent_coef=cfg.ent_coef,
+        vf_coef=cfg.vf_coef,
+        max_grad_norm=cfg.max_grad_norm,
+        verbose=cfg.verbose,
+        tensorboard_log=tb_log,
+        device="auto",
+    )
+    
+    print(f"\nStarting training for {cfg.timesteps:,} timesteps...")
+    print(f"Expected updates: {cfg.timesteps // (cfg.n_envs * cfg.n_steps)}")
+    
+    model.learn(total_timesteps=cfg.timesteps)
     
     print("\nTRAINING COMPLETED")
     
     # Close training environment
     env.close()
-
-    # Rollout best trajectory using eval environment (deterministic)
-    print("\nGenerating optimal trajectory...")
-    obs = eval_env.reset()
-    done = False
-    xs, ys, vs = [], [], []
     
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, info = eval_env.step(action)
-        s = eval_env.envs[0].state
-        xs.append(s.x)
-        ys.append(s.y)
-        vs.append(np.hypot(s.vx, s.vy))
-        done = bool(done[0])
+    # Rollout trajectory - try to get a completed lap
+    print("\nGenerating optimal trajectory (looking for completed lap)...")
+    
+    best_trajectory = None
+    best_checkpoints = 0
+    max_attempts = 10
+    
+    for attempt in range(max_attempts):
+        obs = eval_env.reset()
+        done = False
+        xs, ys, vs = [], [], []
+        
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, info = eval_env.step(action)
+            s = eval_env.envs[0].state
+            xs.append(s.x)
+            ys.append(s.y)
+            vs.append(np.hypot(s.vx, s.vy))
+            done = bool(done[0])
+        
+        # Check episode results
+        racing_env = eval_env.envs[0]
+        checkpoints_hit = len(racing_env.checkpoints_hit) if hasattr(racing_env, 'checkpoints_hit') else 0
+        lap_completed = racing_env.lap_completed if hasattr(racing_env, 'lap_completed') else False
+        
+        print(f"  Attempt {attempt + 1}/{max_attempts}: {checkpoints_hit}/4 checkpoints, "
+              f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} steps")
+        
+        # Keep track of best trajectory
+        if checkpoints_hit > best_checkpoints:
+            best_checkpoints = checkpoints_hit
+            best_trajectory = (xs, ys, vs, lap_completed, checkpoints_hit)
+        
+        # If we completed a lap, use this trajectory
+        if lap_completed:
+            print(f"\n✅ Successfully captured completed lap trajectory!")
+            break
+    else:
+        # No completed lap found, use the best attempt
+        if best_trajectory is not None:
+            xs, ys, vs, lap_completed, checkpoints_hit = best_trajectory
+            print(f"\n⚠️ No completed lap in {max_attempts} attempts. "
+                  f"Using best trajectory with {checkpoints_hit}/4 checkpoints.")
+        else:
+            print(f"\n❌ Failed to generate any valid trajectory.")
     
     # Export telemetry from eval environment
     if hasattr(eval_env.envs[0], 'telemetry') and eval_env.envs[0].telemetry:
@@ -298,6 +393,80 @@ def train_and_export(
     
     traj = np.stack([np.array(xs), np.array(ys), np.array(vs)], axis=1)
     np.save(out_path, traj)
-    print(f"Optimal trajectory saved to {out_path}")
+    print(f"Optimal trajectory saved to {out_path} ({len(xs)} points)")
     
     return traj
+
+
+def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) -> None:
+    """Print detailed training configuration."""
+    print("=" * 70)
+    print("TRAJECTORY OPTIMIZATION - REINFORCEMENT LEARNING")
+    print("=" * 70)
+    
+    # Training parameters
+    print("\nTRAINING CONFIGURATION:")
+    print(f"  Timesteps: {cfg.timesteps:,}")
+    print(f"  Parallel environments: {cfg.n_envs}")
+    print(f"  Steps per env per update: {cfg.n_steps}")
+    print(f"  Batch size: {cfg.batch_size}")
+    print(f"  Effective samples per update: {cfg.n_envs * cfg.n_steps:,}")
+    
+    # PPO hyperparameters
+    print("\nPPO HYPERPARAMETERS:")
+    print(f"  Learning rate: {cfg.learning_rate}")
+    print(f"  Epochs per update: {cfg.n_epochs}")
+    print(f"  Gamma (discount): {cfg.gamma}")
+    print(f"  GAE lambda: {cfg.gae_lambda}")
+    print(f"  Clip range: {cfg.clip_range}")
+    print(f"  Entropy coef: {cfg.ent_coef}")
+    print(f"  Value function coef: {cfg.vf_coef}")
+    print(f"  Max gradient norm: {cfg.max_grad_norm}")
+    
+    # Network architecture
+    print("\nNETWORK ARCHITECTURE:")
+    print(f"  Policy layers: {cfg.pi_layers}")
+    print(f"  Value layers: {cfg.vf_layers}")
+    print(f"  Activation: {cfg.activation}")
+    
+    # Track info
+    print("\nTRACK:")
+    print(f"  Points: {len(track.centerline)}")
+    print(f"  Width: {track.width}m")
+    print(f"  Interpolation: {track.interpolation_resolution} points")
+    
+    # Vehicle info
+    print("\nVEHICLE:")
+    print(f"  Wheelbase: {spec.wheelbase}m")
+    print(f"  Track width: {spec.track_width}m")
+    print(f"  Max steering: {np.degrees(spec.max_steering_angle):.1f}°")
+    
+    # Observation space
+    print("\nOBSERVATION SPACE (21D - Track-Relative):")
+    print("  Vehicle Dynamics (5D): speed, lateral vel, yaw rate, slip angle, steering")
+    print("  Track Position (5D): lateral offset, heading error, progress, boundaries")
+    print("  Lookahead (8D): 4 points ahead (distance, angle)")
+    print("  Control Context (3D): prev throttle, brake, steer")
+    
+    # Curriculum
+    print("\nCURRICULUM LEARNING:")
+    print("  Stage 1: Driving School (5x track, never terminate)")
+    print("  Stage 2: Learner's Permit (3.5x track, soft termination)")
+    print("  Stage 3: Provisional License (2.5x track)")
+    print("  Stage 4: Full License (1.8x track)")
+    print("  Stage 5: Racing Pro (1.2x track)")
+    print("  Stage 6: Champion (1x track, strict)")
+    
+    # Vectorization
+    print("\nVECTORIZED TRAINING:")
+    print(f"  Method: {'SubprocVecEnv' if use_subproc else 'DummyVecEnv'}")
+    print(f"  Obs normalization: {cfg.normalize_obs}")
+    print(f"  Reward normalization: {cfg.normalize_reward}")
+    
+    # Gear info
+    gear_info = get_gear_speed_info(spec)
+    print(f"\nSPEED LIMITS:")
+    print(f"  Top speed: {gear_info['top_speed_kmh']:.1f} km/h")
+    print(f"  RPM limiter: {gear_info['rpm_limiter']:,.0f}")
+    
+    print("=" * 70)

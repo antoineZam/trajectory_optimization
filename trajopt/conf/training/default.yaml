@@ -1,28 +1,37 @@
-# Default RL training hyperparameters
+# Default RL training configuration
+# Balanced settings for stable training
 
 # Total training timesteps
-timesteps: 300000
+timesteps: 500000
 
-# PPO algorithm parameters
-algorithm: PPO
+# PPO algorithm hyperparameters
 learning_rate: 0.0003
-n_steps: 2048
-batch_size: 64
-n_epochs: 10
-gamma: 0.99
-gae_lambda: 0.95
-clip_range: 0.2
-ent_coef: 0.01
-vf_coef: 0.5
-max_grad_norm: 0.5
+n_steps: 2048        # Steps per environment before update
+batch_size: 256      # Minibatch size for updates
+n_epochs: 10         # Epochs per update
+gamma: 0.99          # Discount factor
+gae_lambda: 0.95     # GAE lambda for advantage estimation
+clip_range: 0.2      # PPO clipping parameter
+ent_coef: 0.01       # Entropy coefficient (encourages exploration)
+vf_coef: 0.5         # Value function loss coefficient
+max_grad_norm: 0.5   # Gradient clipping
+
+# Neural network architecture
+network:
+  pi_layers: [256, 256, 128]   # Policy network layers
+  vf_layers: [256, 256, 128]   # Value function layers
+  activation: tanh             # Activation function
 
 # Environment parameters
 env:
-  n_envs: 4
-  normalize_obs: true
-  normalize_reward: true
+  n_envs: 4            # Number of parallel environments
+  normalize_obs: true  # Normalize observations
+  normalize_reward: true  # Normalize rewards
+  clip_obs: 10.0       # Observation clipping threshold
+  clip_reward: 10.0    # Reward clipping threshold
 
-# Logging
+# Logging settings
+verbose: 1
+tensorboard_log: null  # Set to path for TensorBoard logging
 log_interval: 10
 save_freq: 50000
-
