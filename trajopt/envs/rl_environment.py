@@ -60,19 +60,19 @@ class RLConfig:
     target_speed: float = 25.0  # m/s (~90 km/h) - optimal racing speed
     min_speed: float = 5.0  # m/s - minimum acceptable speed
     
-    # Reward weights (tuned for stable learning)
-    # Dense rewards (per-step, should be small but positive for good behavior)
-    progress_reward_scale: float = 1.0  # Scale for distance-based progress
-    speed_reward_scale: float = 0.1  # Reward for maintaining good speed
-    centerline_reward_scale: float = 0.05  # Reward for staying centered
+    # Reward weights (tuned for unnormalized rewards)
+    # Dense rewards: target ~0.1-0.2 per step → ~800-1600 over full lap (8000 steps)
+    progress_reward_scale: float = 1.0  # Multiplier on progress reward
+    speed_reward_scale: float = 0.03  # Reward for maintaining good speed
+    centerline_reward_scale: float = 0.02  # Reward for staying centered
     
-    # Milestone rewards (large, infrequent)
-    checkpoint_bonus: float = 100.0  # Per checkpoint
-    lap_completion_bonus: float = 1000.0  # For completing a lap
+    # Milestone rewards: ~30% of a good episode's total return
+    checkpoint_bonus: float = 200.0  # Per checkpoint (4 × 200 = 800 per lap)
+    lap_completion_bonus: float = 500.0  # For completing a lap
     
-    # Penalties (should be smaller than positive rewards during normal operation)
-    off_track_penalty_scale: float = 0.2  # Per-step penalty when off track
-    termination_penalty: float = -50.0  # One-time penalty on termination
+    # Penalties
+    off_track_penalty_scale: float = 0.5  # Per-step penalty when off track
+    termination_penalty: float = -200.0  # One-time penalty on termination
     
     # Checkpoint system
     num_checkpoints: int = 4
@@ -675,10 +675,9 @@ class RacingEnv(gym.Env):
         elif progress_delta > 0.5:  # Went backwards past start
             progress_delta -= 1.0
         
-        # Scale progress to reward (~0.5 per step at good speed)
-        # Full lap = 1.0, typical episode = 8000 steps, so per-step progress ~ 0.0001
-        # We scale up significantly to make it the dominant signal
-        progress_reward = progress_delta * 5000.0 * self.cfg.progress_reward_scale
+        # Per-step progress ~ 1/8000 ≈ 0.000125 for a full lap in max_steps.
+        # Multiply up so the dense signal is ~0.1-0.2 per step at good speed.
+        progress_reward = progress_delta * 1500.0 * self.cfg.progress_reward_scale
         
         # Only reward forward progress, don't penalize backwards (let termination handle that)
         if progress_reward > 0:
