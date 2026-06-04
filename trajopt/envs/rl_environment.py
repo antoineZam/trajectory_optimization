@@ -629,14 +629,18 @@ class RacingEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, {}
     
     def _check_checkpoint(self, current_progress: float) -> bool:
-        """Check if we've reached the next checkpoint."""
-        checkpoint_spacing = 1.0 / self.cfg.num_checkpoints
-        checkpoint_id = int(current_progress / checkpoint_spacing)
-        checkpoint_id = min(checkpoint_id, self.cfg.num_checkpoints - 1)
+        """Check if we've reached the next checkpoint.
         
-        if checkpoint_id == self.current_checkpoint and checkpoint_id not in self.checkpoints_hit:
+        Checkpoints are at 25%, 50%, 75%, 100% of track progress (1-indexed).
+        """
+        checkpoint_spacing = 1.0 / self.cfg.num_checkpoints
+        # 1-indexed: checkpoint 1 triggers at 25%, 2 at 50%, etc.
+        checkpoint_id = int(current_progress / checkpoint_spacing)
+        checkpoint_id = min(checkpoint_id, self.cfg.num_checkpoints)
+        
+        if checkpoint_id > 0 and checkpoint_id == self.current_checkpoint + 1 and checkpoint_id not in self.checkpoints_hit:
             self.checkpoints_hit.add(checkpoint_id)
-            self.current_checkpoint = (checkpoint_id + 1) % self.cfg.num_checkpoints
+            self.current_checkpoint = checkpoint_id
             return True
         return False
     
