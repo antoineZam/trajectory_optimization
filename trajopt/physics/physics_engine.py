@@ -226,7 +226,6 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     
     # Apply realistic speed-dependent steering limitations
     max_steer_angle = get_max_steering_angle(spec, v)
-    steer_before = steer
     steer = float(np.clip(steer, -max_steer_angle, max_steer_angle))
     
     # Physics debug disabled - using telemetry system for comprehensive monitoring
@@ -260,28 +259,37 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     Fx_brake = brake_torque / max(wheel_radius,1e-3)
     Fx_long = Fx_driven - Fx_brake - np.sign(s.vx) * drag
 
-    # Direction (bicycle) — saturée par Fy_max
-    # Simplification : Fy_front ~ k*steer*vx , saturée ; Fy_rear ~ -C*beta
-    beta = np.arctan2(s.vy, max(s.vx, 1e-3))
-    Cf = Fy_max_front / max(abs(steer)*1.0 + 1e-3, 1.0) # heuristique
-    Cr = Fy_max_rear / max(abs(beta)*5.0 + 1e-3, 1.0)
-    Fy_front = np.clip(steer * Cf, -Fy_max_front, Fy_max_front)
-    Fy_rear = np.clip(-beta * Cr, -Fy_max_rear, Fy_max_rear)
+    # CG-to-axle distances from wheelbase and mass split
+    lf = spec.wheelbase * (1.0 - spec.mass_split_front)  # CG to front axle
+    lr = spec.wheelbase * spec.mass_split_front           # CG to rear axle
 
-    # Équations de mouvement 2D (plan)
+    # Tire slip angles (bicycle model)
+    vx_safe = max(abs(s.vx), 1.0)
+    alpha_f = steer - np.arctan2(s.vy + lf * s.yaw_rate, vx_safe)
+    alpha_r = -np.arctan2(s.vy - lr * s.yaw_rate, vx_safe)
+
+    # Linear cornering stiffness with saturation at Fy_max.
+    # Peak grip reached at ~7 deg slip angle (typical racing tire).
+    ALPHA_PEAK = 0.12  # rad
+    Ca_f = Fy_max_front / ALPHA_PEAK
+    Ca_r = Fy_max_rear / ALPHA_PEAK
+    Fy_front = np.clip(-Ca_f * alpha_f, -Fy_max_front, Fy_max_front)
+    Fy_rear = np.clip(-Ca_r * alpha_r, -Fy_max_rear, Fy_max_rear)
+
+    # Equations of motion (planar bicycle model)
     ax = (Fx_long - Fy_front * np.sin(steer)) / spec.mass + s.vy * s.yaw_rate
     ay = (Fy_front * np.cos(steer) + Fy_rear) / spec.mass - s.vx * s.yaw_rate
-    yaw_acc = (Fy_front * 1.2 - Fy_rear * 1.4) / max(spec.moi[2],1e-3) # bras de levier heuristiques
+    yaw_acc = (lf * Fy_front * np.cos(steer) - lr * Fy_rear) / max(spec.moi[2], 1e-3)
 
-    # Intégration Euler
+    # Semi-implicit Euler: update velocities first, then positions with new velocities
     vx = s.vx + dt * ax
     vy = s.vy + dt * ay
     yaw_rate = s.yaw_rate + dt * yaw_acc
     yaw = s.yaw + dt * yaw_rate
-    x = s.x + dt * (s.vx * np.cos(s.yaw) - s.vy * np.sin(s.yaw))
-    y = s.y + dt * (s.vx * np.sin(s.yaw) + s.vy * np.cos(s.yaw))
+    x = s.x + dt * (vx * np.cos(yaw) - vy * np.sin(yaw))
+    y = s.y + dt * (vx * np.sin(yaw) + vy * np.cos(yaw))
 
-    # Mise à jour RPM/gear (boîte auto simple)
+    # Auto gearbox
     upshift_rpm = 0.92 * spec.rpm_limiter
     downshift_rpm = 2000.0
     new_gear = gear
@@ -290,41 +298,33 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     elif rpm < downshift_rpm and gear > 1:
         new_gear -= 1
 
-    # REALISTIC SPEED LIMITING: Enforce gear-based speed limits with 88 m/s absolute cap
+    # Gear-based speed limiting (88 m/s absolute cap)
     current_gear = int(np.clip(new_gear, 1, len(spec.gear_ratios)))
     max_speed_current_gear = get_max_speed_for_gear(spec, current_gear, wheel_radius, absolute_top_speed=88.0)
-    
-    # Limit forward/backward speed based on current gear capabilities
-    # Allow some overhead (5%) for brief overspeeds during gear shifts
     speed_limit = max_speed_current_gear * 1.05
     current_speed = np.hypot(vx, vy)
     
     if current_speed > speed_limit:
-        # Scale down velocity to respect gear-based speed limit
         scale_factor = speed_limit / current_speed
         vx *= scale_factor
         vy *= scale_factor
         
-        # Recalculate RPM after speed limiting
         wheel_omega = (vx / max(wheel_radius, 1e-3)) if current_speed > 0.1 else 0.0
         ratio = spec.gear_ratios[current_gear-1] * spec.final_drive
         rpm = np.clip(wheel_omega * ratio * 9.5493, 800.0, spec.rpm_limiter)
     
-    # Safety checks to prevent extreme values
+    # Safety clamps
     x = np.clip(x, -1e6, 1e6)
     y = np.clip(y, -1e6, 1e6)
-    # Speed limits now handled by gear constraints above (much more realistic)
-    vy = np.clip(vy, -50.0, 50.0)  # Limit lateral velocity for stability
-    yaw_rate = np.clip(yaw_rate, -20.0, 20.0)  # Limit angular velocity
-    yaw = np.arctan2(np.sin(yaw), np.cos(yaw))  # Normalize angle
+    vy = np.clip(vy, -50.0, 50.0)
+    yaw_rate = np.clip(yaw_rate, -20.0, 20.0)
+    yaw = np.arctan2(np.sin(yaw), np.cos(yaw))
     rpm = np.clip(rpm, 500.0, spec.rpm_limiter * 1.1)
     
-    # Check for NaN/inf values
+    # NaN/inf guard: return previous state unchanged instead of teleporting
     if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(vx) and np.isfinite(vy) and 
             np.isfinite(yaw) and np.isfinite(yaw_rate) and np.isfinite(rpm)):
-        # Reset to safe values if any NaN/inf detected
-        print("Warning: NaN/inf detected in vehicle state, resetting to safe values")
-        return VehicleState(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2, 1500.0)
+        return s
     
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
 
