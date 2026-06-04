@@ -15,15 +15,63 @@ from typing import Any, Callable, Dict, Optional, Union
 import numpy as np
 import torch.nn as nn
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from envs.rl_environment import RacingEnv
 from physics.physics_engine import VehicleSpec, get_gear_speed_info, get_steering_info
+from utils.curriculum import CurriculumLearning
 from utils.track import load_track_json
 
 
 # Default number of parallel environments
 DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
+
+
+class CurriculumCallback(BaseCallback):
+    """Centralized curriculum that pushes stage params to all vectorized envs."""
+    
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose)
+        self.curriculum = CurriculumLearning()
+        self.total_episodes = 0
+    
+    def _on_training_start(self) -> None:
+        self._push_curriculum_params()
+    
+    def _on_step(self) -> bool:
+        infos = self.locals["infos"]
+        dones = self.locals["dones"]
+        
+        any_graduated = False
+        for done, info in zip(dones, infos):
+            if done and "checkpoints_hit" in info:
+                self.total_episodes += 1
+                graduated = self.curriculum.record_episode_result(
+                    checkpoints_hit=info["checkpoints_hit"],
+                    lap_completed=info["lap_completed"],
+                    episode_num=self.total_episodes,
+                )
+                if graduated:
+                    any_graduated = True
+        
+        if any_graduated:
+            self._push_curriculum_params()
+        
+        return True
+    
+    def _push_curriculum_params(self) -> None:
+        stage = self.curriculum.get_current_stage()
+        params = {
+            "width_multiplier": stage.track_width_multiplier,
+            "max_steps": stage.max_episode_steps,
+            "termination_mode": stage.termination_mode,
+            "wheels_required": stage.wheels_required_inside,
+            "checkpoint_multiplier": stage.checkpoint_reward_multiplier,
+            "progress_bonus": stage.progress_bonus,
+            "stage_name": stage.name,
+        }
+        self.training_env.env_method("update_curriculum_params", params)
 
 
 @dataclass
@@ -313,7 +361,8 @@ def train_and_export(
     print(f"\nStarting training for {cfg.timesteps:,} timesteps...")
     print(f"Expected updates: {cfg.timesteps // (cfg.n_envs * cfg.n_steps)}")
     
-    model.learn(total_timesteps=cfg.timesteps)
+    curriculum_cb = CurriculumCallback(verbose=cfg.verbose)
+    model.learn(total_timesteps=cfg.timesteps, callback=curriculum_cb)
     
     print("\nTRAINING COMPLETED")
     
