@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 
@@ -11,22 +13,32 @@ class PredConfig:
     feat_dim: int = 10 # [x,y,vx,vy,yaw,... actions,... veh embeds]
     hidden: int = 128
     layers: int = 2
-    
+
 class LSTMForecaster(nn.Module):
     def __init__(self, cfg: PredConfig):
         super().__init__()
         self.cfg = cfg
-        self.encoder = nn.LSTM(input_size=cfg.feat_dim, hidden_size=cfg.hidden, num_layers=cfg.layers, batch_first=True)
-        self.dec = nn.LSTM(input_size=2, hidden_size=cfg.hidden, num_layers=cfg.layers, batch_first=True)
+        self.encoder = nn.LSTM(
+            input_size=cfg.feat_dim,
+            hidden_size=cfg.hidden,
+            num_layers=cfg.layers,
+            batch_first=True,
+        )
+        self.dec = nn.LSTM(
+            input_size=2,
+            hidden_size=cfg.hidden,
+            num_layers=cfg.layers,
+            batch_first=True,
+        )
         self.head = nn.Linear(cfg.hidden, 2)
-    
+
     def forward(self, hist: torch.Tensor, fut_seed: torch.Tensor | None = None):
         B = hist.size(0)
         h, (hT, cT) = self.encoder(hist)
         if self.training and fut_seed is not None:
             dec_h, _ = self.dec(fut_seed, (hT, cT))
             return self.head(dec_h)
-        
+
         T = self.cfg.fut_len
         y = []
         y_t = torch.zeros(B, 1, 2, device=hist.device)
@@ -37,7 +49,7 @@ class LSTMForecaster(nn.Module):
             y_t = dxy
             y.append(dxy)
         return torch.cat(y, dim=1)
-    
-    
+
+
 def loss_fn(pred: torch.Tensor, target: torch.Tensor):
     return ((pred - target) ** 2).mean()

@@ -1,10 +1,16 @@
 from __future__ import annotations
+
 import numpy as np
-from typing import Tuple
+
 from .track import Track
 
 
-def sample_next_centerline_points(centerline: np.ndarray, pos_xy: np.ndarray, k: int = 5, lookahead: float = 5.0) -> np.ndarray:
+def sample_next_centerline_points(
+    centerline: np.ndarray,
+    pos_xy: np.ndarray,
+    k: int = 5,
+    lookahead: float = 5.0,
+) -> np.ndarray:
     """Renvoie k points de la ligne centrale à venir, espacés par lookahead (approx)."""
     # Trouve le point le plus proche
     d2 = ((centerline - pos_xy) ** 2).sum(axis=1)

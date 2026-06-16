@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
 
 import numpy as np
 
 from schemas import validate_vehicle_data
-
 
 # -------------------------
 # Données véhicule & utilitaires
@@ -30,7 +28,7 @@ class VehicleSpec:
     steering_speed_factor: float # how much speed reduces steering (s/m)
     min_turn_radius: float # minimum turning radius at low speed (m)
     # Powertrain
-    torque_curve: np.ndarray # shape (M, 2): RPM, Torque(Nm)    
+    torque_curve: np.ndarray # shape (M, 2): RPM, Torque(Nm)
     rpm_limiter: float
     gear_ratios: np.ndarray
     final_drive: float
@@ -47,26 +45,26 @@ class VehicleSpec:
     brake_split_front: float
 
     @staticmethod
-    def from_config(cfg: Dict) -> "VehicleSpec":
+    def from_config(cfg: dict) -> VehicleSpec:
         """Create VehicleSpec from configuration dictionary.
-        
+
         Args:
             cfg: Vehicle configuration dictionary (from JSON, YAML, or Hydra).
-            
+
         Returns:
             Validated VehicleSpec instance.
-            
+
         Raises:
             pydantic.ValidationError: If configuration fails validation.
         """
         # Validate configuration with Pydantic schema
         validated = validate_vehicle_data(cfg)
-        
+
         ch = validated.chassis
         pw = validated.powertrain
         st = validated.suspension_tires
         br = validated.brakes
-        
+
         return VehicleSpec(
             mass=ch.masse_totale,
             cg=np.array(ch.centre_de_gravite, dtype=float),
@@ -118,7 +116,12 @@ def interp_torque(torque_curve: np.ndarray, rpm: float) -> float:
     return float(np.interp(rpm, torque_curve[:,0], torque_curve[:,1]))
 
 
-def aero_forces(spec: VehicleSpec, v: float, rho_air: float = 1.225, area: float = 2.0) -> Tuple[float, float]:
+def aero_forces(
+    spec: VehicleSpec,
+    v: float,
+    rho_air: float = 1.225,
+    area: float = 2.0,
+) -> tuple[float, float]:
     """
     Drag ~ 0.5*rho*Cx*A*v^2 ; Downforce (front+rear) ~ 0.5*rho*Cz*A*v^2
     """
@@ -131,81 +134,92 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float = 4000.0) -> float:
     return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
 
 
-def get_max_speed_for_gear(spec: VehicleSpec, gear: int, wheel_radius: float = 0.33, absolute_top_speed: float = 88.0) -> float:
+def get_max_speed_for_gear(
+    spec: VehicleSpec,
+    gear: int,
+    wheel_radius: float = 0.33,
+    absolute_top_speed: float = 88.0,
+) -> float:
     """
     Calculate maximum realistic speed for a given gear based on RPM limiter.
-    
+
     Args:
         spec: Vehicle specification with gear ratios and RPM limiter
         gear: Current gear (1-based)
         wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s (default 88 m/s = 317 km/h)
-    
+
     Returns:
         Maximum speed in m/s for this gear, capped at absolute_top_speed
     """
     if gear < 1 or gear > len(spec.gear_ratios):
         return min(50.0, absolute_top_speed)  # Fallback speed limit
-    
+
     # Get gear ratio and final drive
     gear_ratio = spec.gear_ratios[gear-1]
     total_ratio = gear_ratio * spec.final_drive
-    
+
     # Calculate max wheel speed from RPM limiter
     # RPM → rad/s → wheel speed → vehicle speed
     max_wheel_omega = spec.rpm_limiter / 9.5493  # RPM to rad/s
     max_wheel_speed = max_wheel_omega / total_ratio  # Account for gear reduction
     max_vehicle_speed = max_wheel_speed * wheel_radius  # Linear speed
-    
+
     # ENFORCE ABSOLUTE TOP SPEED LIMIT: No gear can exceed 88 m/s
     return min(max_vehicle_speed, absolute_top_speed)
 
 
-def get_gear_speed_limits(spec: VehicleSpec, wheel_radius: float = 0.33, absolute_top_speed: float = 88.0) -> np.ndarray:
+def get_gear_speed_limits(
+    spec: VehicleSpec,
+    wheel_radius: float = 0.33,
+    absolute_top_speed: float = 88.0,
+) -> np.ndarray:
     """
     Calculate speed limits for all gears.
-    
+
     Args:
         spec: Vehicle specification
         wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s
-    
+
     Returns:
         Array of max speeds for each gear [gear1_max, gear2_max, ...]
     """
-    return np.array([get_max_speed_for_gear(spec, gear+1, wheel_radius, absolute_top_speed) 
+    return np.array([get_max_speed_for_gear(spec, gear+1, wheel_radius, absolute_top_speed)
                      for gear in range(len(spec.gear_ratios))])
 
 
 def get_max_steering_angle(spec: VehicleSpec, speed: float) -> float:
     """
     Calculate maximum allowed steering angle based on vehicle speed.
-    
+
     At low speeds: Full steering angle available
     At high speeds: Reduced steering to prevent unrealistic sharp turns
-    
+
     Args:
         spec: Vehicle specification with steering limits
         speed: Current vehicle speed (m/s)
-    
+
     Returns:
         Maximum allowed steering angle (rad)
     """
     # Base maximum steering angle (physical limit)
     max_angle = spec.max_steering_angle
-    
+
     # Speed-dependent reduction factor
     # At 0 m/s: full steering, at higher speeds: progressively less
     speed_reduction = 1.0 / (1.0 + spec.steering_speed_factor * speed)
-    
+
     # Apply minimum turn radius constraint ONLY at higher speeds
     # Allow more aggressive steering at low speeds for learning
     if speed > 5.0:  # Only apply radius constraints above 18 km/h
         # Using bicycle model: tan(δ) = wheelbase / turn_radius
         # Speed-adjusted minimum radius (much less aggressive)
-        speed_adjusted_radius = spec.min_turn_radius * (1.0 + (speed - 5.0) * 0.05)  # Gentler increase
+        speed_adjusted_radius = (
+            spec.min_turn_radius * (1.0 + (speed - 5.0) * 0.05)
+        )
         speed_radius_angle = np.arctan(spec.wheelbase / speed_adjusted_radius)
-        
+
         # Take the most restrictive limit
         return min(max_angle * speed_reduction, speed_radius_angle)
     else:
@@ -220,14 +234,14 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # Clamp inputs
     throttle = float(np.clip(throttle, 0.0, 1.0))
     brake = float(np.clip(brake, 0.0, 1.0))
-    
+
     # Calculate current speed for steering limitations
     v = np.hypot(s.vx, s.vy)
-    
+
     # Apply realistic speed-dependent steering limitations
     max_steer_angle = get_max_steering_angle(spec, v)
     steer = float(np.clip(steer, -max_steer_angle, max_steer_angle))
-    
+
     # Physics debug disabled - using telemetry system for comprehensive monitoring
     # (Debug code removed to reduce console noise)
 
@@ -243,7 +257,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     mu_r = tire_mu(spec, Fz_rear)
     Fy_max_front = mu_f * Fz_front
     Fy_max_rear = mu_r * Fz_rear
-    
+
     # Propulsion : estimate wheel speed from gear
     gear = int(np.clip(s.gear, 1, len(spec.gear_ratios)))
     ratio = spec.gear_ratios[gear-1] * spec.final_drive
@@ -300,19 +314,21 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
 
     # Gear-based speed limiting (88 m/s absolute cap)
     current_gear = int(np.clip(new_gear, 1, len(spec.gear_ratios)))
-    max_speed_current_gear = get_max_speed_for_gear(spec, current_gear, wheel_radius, absolute_top_speed=88.0)
+    max_speed_current_gear = get_max_speed_for_gear(
+        spec, current_gear, wheel_radius, absolute_top_speed=88.0,
+    )
     speed_limit = max_speed_current_gear * 1.05
     current_speed = np.hypot(vx, vy)
-    
+
     if current_speed > speed_limit:
         scale_factor = speed_limit / current_speed
         vx *= scale_factor
         vy *= scale_factor
-        
+
         wheel_omega = (vx / max(wheel_radius, 1e-3)) if current_speed > 0.1 else 0.0
         ratio = spec.gear_ratios[current_gear-1] * spec.final_drive
         rpm = np.clip(wheel_omega * ratio * 9.5493, 800.0, spec.rpm_limiter)
-    
+
     # Safety clamps
     x = np.clip(x, -1e6, 1e6)
     y = np.clip(y, -1e6, 1e6)
@@ -320,36 +336,40 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     yaw_rate = np.clip(yaw_rate, -20.0, 20.0)
     yaw = np.arctan2(np.sin(yaw), np.cos(yaw))
     rpm = np.clip(rpm, 500.0, spec.rpm_limiter * 1.1)
-    
+
     # NaN/inf guard: return previous state unchanged instead of teleporting
-    if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(vx) and np.isfinite(vy) and 
+    if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(vx) and np.isfinite(vy) and
             np.isfinite(yaw) and np.isfinite(yaw_rate) and np.isfinite(rpm)):
         return s
-    
+
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
 
 
-def get_gear_speed_info(spec: VehicleSpec, wheel_radius: float = 0.33, absolute_top_speed: float = 88.0) -> dict:
+def get_gear_speed_info(
+    spec: VehicleSpec,
+    wheel_radius: float = 0.33,
+    absolute_top_speed: float = 88.0,
+) -> dict:
     """
     Get detailed gear and speed information for vehicle analysis.
-    
+
     Args:
         spec: Vehicle specification
-        wheel_radius: Wheel radius in meters  
+        wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s
-    
+
     Returns:
         Dictionary with gear speeds, RPM limits, and other drivetrain info
     """
     speed_limits = get_gear_speed_limits(spec, wheel_radius, absolute_top_speed)
-    
+
     gear_info = {}
     for gear in range(1, len(spec.gear_ratios) + 1):
         max_speed_ms = speed_limits[gear-1]
         max_speed_kmh = max_speed_ms * 3.6
         gear_ratio = spec.gear_ratios[gear-1]
         total_ratio = gear_ratio * spec.final_drive
-        
+
         gear_info[f'gear_{gear}'] = {
             'max_speed_ms': max_speed_ms,
             'max_speed_kmh': max_speed_kmh,
@@ -357,7 +377,7 @@ def get_gear_speed_info(spec: VehicleSpec, wheel_radius: float = 0.33, absolute_
             'total_ratio': total_ratio,
             'rpm_at_max_speed': spec.rpm_limiter
         }
-    
+
     return {
         'gear_speeds': gear_info,
         'rpm_limiter': spec.rpm_limiter,
@@ -375,13 +395,13 @@ def get_steering_info(spec: VehicleSpec, speed: float) -> dict:
     max_angle = get_max_steering_angle(spec, speed)
     max_angle_deg = np.degrees(max_angle)
     reduction_factor = max_angle / spec.max_steering_angle
-    
+
     # Calculate turn radius at this speed and max steering
     if abs(max_angle) > 1e-6:
         turn_radius = spec.wheelbase / np.tan(abs(max_angle))
     else:
         turn_radius = float('inf')
-    
+
     return {
         'speed_ms': speed,
         'speed_kmh': speed * 3.6,
@@ -400,28 +420,28 @@ def get_wheel_positions(spec: VehicleSpec, state: VehicleState) -> np.ndarray:
     # Vehicle center position
     cx, cy = state.x, state.y
     yaw = state.yaw
-    
+
     # Half dimensions
     half_wheelbase = spec.wheelbase / 2.0
     half_track = spec.track_width / 2.0
-    
+
     # Calculate wheel positions in vehicle frame, then transform to global frame
     cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
-    
+
     # Front left wheel
     fl_x = cx + cos_yaw * half_wheelbase - sin_yaw * half_track
     fl_y = cy + sin_yaw * half_wheelbase + cos_yaw * half_track
-    
-    # Front right wheel  
+
+    # Front right wheel
     fr_x = cx + cos_yaw * half_wheelbase + sin_yaw * half_track
     fr_y = cy + sin_yaw * half_wheelbase - cos_yaw * half_track
-    
+
     # Rear left wheel
     rl_x = cx - cos_yaw * half_wheelbase - sin_yaw * half_track
     rl_y = cy - sin_yaw * half_wheelbase + cos_yaw * half_track
-    
+
     # Rear right wheel
     rr_x = cx - cos_yaw * half_wheelbase + sin_yaw * half_track
     rr_y = cy - sin_yaw * half_wheelbase - cos_yaw * half_track
-    
+
     return np.array([[fl_x, fl_y], [fr_x, fr_y], [rl_x, rl_y], [rr_x, rr_y]])

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any
 
 import numpy as np
 import torch.nn as nn
@@ -19,10 +20,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from envs.rl_environment import RacingEnv
-from physics.physics_engine import VehicleSpec, get_gear_speed_info, get_steering_info
+from physics.physics_engine import VehicleSpec, get_gear_speed_info
 from utils.curriculum import CurriculumLearning
 from utils.track import load_track_json
-
 
 # Default number of parallel environments
 DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
@@ -30,19 +30,19 @@ DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
 
 class CurriculumCallback(BaseCallback):
     """Centralized curriculum that pushes stage params to all vectorized envs."""
-    
+
     def __init__(self, verbose: int = 0):
         super().__init__(verbose)
         self.curriculum = CurriculumLearning()
         self.total_episodes = 0
-    
+
     def _on_training_start(self) -> None:
         self._push_curriculum_params()
-    
+
     def _on_step(self) -> bool:
         infos = self.locals["infos"]
         dones = self.locals["dones"]
-        
+
         any_graduated = False
         for done, info in zip(dones, infos):
             if done and "checkpoints_hit" in info:
@@ -54,12 +54,12 @@ class CurriculumCallback(BaseCallback):
                 )
                 if graduated:
                     any_graduated = True
-        
+
         if any_graduated:
             self._push_curriculum_params()
-        
+
         return True
-    
+
     def _push_curriculum_params(self) -> None:
         stage = self.curriculum.get_current_stage()
         params = {
@@ -77,12 +77,12 @@ class CurriculumCallback(BaseCallback):
 @dataclass
 class TrainingConfig:
     """Training configuration with sensible defaults.
-    
+
     These defaults can be overridden by Hydra configuration.
     """
     # Total training timesteps
     timesteps: int = 500_000
-    
+
     # PPO hyperparameters
     learning_rate: float = 3e-4
     n_steps: int = 2048
@@ -94,39 +94,39 @@ class TrainingConfig:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    
+
     # Network architecture
     pi_layers: tuple = (256, 256, 128)
     vf_layers: tuple = (256, 256, 128)
     activation: str = "tanh"
-    
+
     # Environment settings
     n_envs: int = DEFAULT_N_ENVS
     normalize_obs: bool = True
     normalize_reward: bool = True
     clip_obs: float = 10.0
     clip_reward: float = 10.0
-    
+
     # Logging
     verbose: int = 1
-    tensorboard_log: Optional[str] = None
-    
+    tensorboard_log: str | None = None
+
     @classmethod
-    def from_dict(cls, config: Dict[str, Any]) -> "TrainingConfig":
+    def from_dict(cls, config: dict[str, Any]) -> TrainingConfig:
         """Create TrainingConfig from a dictionary (e.g., from Hydra)."""
         # Extract values with defaults
         kwargs = {}
-        
+
         # Direct mappings
         direct_fields = [
             "timesteps", "learning_rate", "n_steps", "batch_size", "n_epochs",
-            "gamma", "gae_lambda", "clip_range", "ent_coef", "vf_coef", 
+            "gamma", "gae_lambda", "clip_range", "ent_coef", "vf_coef",
             "max_grad_norm", "verbose", "tensorboard_log"
         ]
         for field in direct_fields:
             if field in config:
                 kwargs[field] = config[field]
-        
+
         # Nested env config
         if "env" in config:
             env_cfg = config["env"]
@@ -140,7 +140,7 @@ class TrainingConfig:
                 kwargs["clip_obs"] = env_cfg["clip_obs"]
             if "clip_reward" in env_cfg:
                 kwargs["clip_reward"] = env_cfg["clip_reward"]
-        
+
         # Network architecture
         if "network" in config:
             net_cfg = config["network"]
@@ -150,7 +150,7 @@ class TrainingConfig:
                 kwargs["vf_layers"] = tuple(net_cfg["vf_layers"])
             if "activation" in net_cfg:
                 kwargs["activation"] = net_cfg["activation"]
-        
+
         return cls(**kwargs)
 
 
@@ -162,16 +162,16 @@ def make_env_factory(
     enable_curriculum: bool = True,
 ) -> Callable[[], RacingEnv]:
     """Create a factory function for environment instantiation.
-    
+
     This factory is picklable and can be used with SubprocVecEnv.
-    
+
     Args:
         track_path: Path to track JSON file.
         vehicle_cfg: Vehicle configuration dictionary.
         interpolation_resolution: Track interpolation resolution.
         enable_telemetry: Whether to enable telemetry (only for rank 0).
         enable_curriculum: Whether to enable curriculum learning.
-        
+
     Returns:
         A callable that creates a RacingEnv instance.
     """
@@ -195,7 +195,7 @@ def create_vec_env(
     use_subproc: bool = True,
 ) -> tuple:
     """Create a vectorized environment for parallel training.
-    
+
     Args:
         track_path: Path to track JSON file.
         vehicle_cfg: Vehicle configuration dictionary.
@@ -203,12 +203,12 @@ def create_vec_env(
         interpolation_resolution: Track interpolation resolution.
         use_subproc: If True, use SubprocVecEnv for true parallelism.
                      If False, use DummyVecEnv (sequential, for debugging).
-        
+
     Returns:
         Vectorized training environment (optionally wrapped with VecNormalize).
     """
     n_envs = training_cfg.n_envs
-    
+
     # Create environment factories
     # Only enable telemetry on the first environment to avoid conflicts
     env_fns = [
@@ -221,7 +221,7 @@ def create_vec_env(
         )
         for i in range(n_envs)
     ]
-    
+
     # Create vectorized environment
     if use_subproc and n_envs > 1:
         # Use SubprocVecEnv for true parallel execution
@@ -232,7 +232,7 @@ def create_vec_env(
         # Use DummyVecEnv for sequential execution (debugging)
         vec_env = DummyVecEnv(env_fns)
         print(f"  Using DummyVecEnv with {n_envs} sequential environments")
-    
+
     # Optionally wrap with VecNormalize for better training stability
     if training_cfg.normalize_obs or training_cfg.normalize_reward:
         vec_env = VecNormalize(
@@ -242,8 +242,11 @@ def create_vec_env(
             clip_obs=training_cfg.clip_obs,
             clip_reward=training_cfg.clip_reward,
         )
-        print(f"  Normalization: obs={training_cfg.normalize_obs}, reward={training_cfg.normalize_reward}")
-    
+        print(
+            f"  Normalization: obs={training_cfg.normalize_obs},"
+            f" reward={training_cfg.normalize_reward}"
+        )
+
     return vec_env
 
 
@@ -261,17 +264,17 @@ def _get_activation_fn(name: str):
 
 def train_and_export(
     track_path: str,
-    vehicle_cfg: Union[str, dict],
+    vehicle_cfg: str | dict,
     out_path: str,
-    training_cfg: Optional[Union[Dict[str, Any], TrainingConfig]] = None,
+    training_cfg: dict[str, Any] | TrainingConfig | None = None,
     interpolation_resolution: int = 2000,
     use_subproc: bool = True,
     # Legacy parameters for backwards compatibility
-    timesteps: Optional[int] = None,
-    n_envs: Optional[int] = None,
+    timesteps: int | None = None,
+    n_envs: int | None = None,
 ):
     """Train RL agent and export optimal trajectory.
-    
+
     Args:
         track_path: Path to track JSON file.
         vehicle_cfg: Either a path to vehicle config JSON or a config dict.
@@ -281,7 +284,7 @@ def train_and_export(
         use_subproc: Whether to use SubprocVecEnv (True) or DummyVecEnv (False).
         timesteps: (Legacy) Override total timesteps.
         n_envs: (Legacy) Override number of environments.
-    
+
     Returns:
         Optimal trajectory as numpy array.
     """
@@ -292,28 +295,28 @@ def train_and_export(
         cfg = TrainingConfig.from_dict(training_cfg)
     else:
         cfg = training_cfg
-    
+
     # Apply legacy overrides if provided
     if timesteps is not None:
         cfg.timesteps = timesteps
     if n_envs is not None:
         cfg.n_envs = n_envs
-    
+
     # Load track for info display
     track = load_track_json(track_path, interpolation_resolution=interpolation_resolution)
-    
+
     # Accept either a path string or a config dict
     if isinstance(vehicle_cfg, str):
-        with open(vehicle_cfg, "r", encoding="utf-8") as f:
+        with open(vehicle_cfg, encoding="utf-8") as f:
             veh_cfg = json.load(f)
     else:
         veh_cfg = vehicle_cfg
-    
+
     spec = VehicleSpec.from_config(veh_cfg)
-    
+
     # Print training configuration
     _print_training_info(cfg, track, spec, use_subproc)
-    
+
     # Create vectorized training environment
     print("\nInitializing vectorized environments...")
     env = create_vec_env(
@@ -323,7 +326,7 @@ def train_and_export(
         interpolation_resolution=interpolation_resolution,
         use_subproc=use_subproc,
     )
-    
+
     # Build policy kwargs from config
     policy_kwargs = dict(
         activation_fn=_get_activation_fn(cfg.activation),
@@ -332,12 +335,12 @@ def train_and_export(
             vf=list(cfg.vf_layers),
         )
     )
-    
+
     # Handle tensorboard_log - set to None if empty or not a valid path
     tb_log = cfg.tensorboard_log
     if tb_log is not None and (tb_log == "" or tb_log == "null"):
         tb_log = None
-    
+
     # Create PPO model with config hyperparameters
     model = PPO(
         "MlpPolicy",
@@ -357,15 +360,15 @@ def train_and_export(
         tensorboard_log=tb_log,
         device="auto",
     )
-    
+
     print(f"\nStarting training for {cfg.timesteps:,} timesteps...")
     print(f"Expected updates: {cfg.timesteps // (cfg.n_envs * cfg.n_steps)}")
-    
+
     curriculum_cb = CurriculumCallback(verbose=cfg.verbose)
     model.learn(total_timesteps=cfg.timesteps, callback=curriculum_cb)
-    
+
     print("\nTRAINING COMPLETED")
-    
+
     # Save model and normalization stats
     import os
     model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
@@ -374,7 +377,7 @@ def train_and_export(
     if isinstance(env, VecNormalize):
         env.save(os.path.join(model_dir, "vec_normalize.pkl"))
     print(f"Model saved to {model_dir}/")
-    
+
     # Build eval environment with the same normalization stats as training
     print("\nGenerating optimal trajectory (looking for completed lap)...")
     raw_eval_env = DummyVecEnv([
@@ -386,7 +389,7 @@ def train_and_export(
             enable_curriculum=False,
         )
     ])
-    
+
     # Wrap eval env with VecNormalize using training stats (no reward normalization for eval)
     if isinstance(env, VecNormalize):
         eval_env = VecNormalize(
@@ -399,25 +402,25 @@ def train_and_export(
         eval_env.training = False
     else:
         eval_env = raw_eval_env
-    
+
     # Close training environment (after copying stats)
     env.close()
-    
+
     # Access the underlying RacingEnv (inside DummyVecEnv, inside VecNormalize)
     def _get_racing_env():
         if isinstance(eval_env, VecNormalize):
             return eval_env.venv.envs[0]
         return eval_env.envs[0]
-    
+
     best_trajectory = None
     best_checkpoints = 0
     max_attempts = 10
-    
+
     for attempt in range(max_attempts):
         obs = eval_env.reset()
         done = False
         xs, ys, vs = [], [], []
-        
+
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = eval_env.step(action)
@@ -426,20 +429,23 @@ def train_and_export(
             ys.append(s.y)
             vs.append(np.hypot(s.vx, s.vy))
             done = bool(done[0])
-        
+
         racing_env = _get_racing_env()
-        checkpoints_hit = len(racing_env.checkpoints_hit) if hasattr(racing_env, 'checkpoints_hit') else 0
+        checkpoints_hit = (
+            len(racing_env.checkpoints_hit)
+            if hasattr(racing_env, 'checkpoints_hit') else 0
+        )
         lap_completed = racing_env.lap_completed if hasattr(racing_env, 'lap_completed') else False
-        
+
         print(f"  Attempt {attempt + 1}/{max_attempts}: {checkpoints_hit}/4 checkpoints, "
               f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} steps")
-        
+
         if checkpoints_hit > best_checkpoints:
             best_checkpoints = checkpoints_hit
             best_trajectory = (xs, ys, vs, lap_completed, checkpoints_hit)
-        
+
         if lap_completed:
-            print(f"\nSuccessfully captured completed lap trajectory!")
+            print("\nSuccessfully captured completed lap trajectory!")
             break
     else:
         if best_trajectory is not None:
@@ -447,8 +453,8 @@ def train_and_export(
             print(f"\nNo completed lap in {max_attempts} attempts. "
                   f"Using best trajectory with {checkpoints_hit}/4 checkpoints.")
         else:
-            print(f"\nFailed to generate any valid trajectory.")
-    
+            print("\nFailed to generate any valid trajectory.")
+
     # Export telemetry from eval environment
     racing_env = _get_racing_env()
     if hasattr(racing_env, 'telemetry') and racing_env.telemetry:
@@ -459,13 +465,13 @@ def train_and_export(
         except ImportError:
             print("   Note: Install pandas for CSV export")
         print("   Telemetry data saved to ./telemetry/ directory")
-    
+
     eval_env.close()
-    
+
     traj = np.stack([np.array(xs), np.array(ys), np.array(vs)], axis=1)
     np.save(out_path, traj)
     print(f"Optimal trajectory saved to {out_path} ({len(xs)} points)")
-    
+
     return traj
 
 
@@ -474,7 +480,7 @@ def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) ->
     print("=" * 70)
     print("TRAJECTORY OPTIMIZATION - REINFORCEMENT LEARNING")
     print("=" * 70)
-    
+
     # Training parameters
     print("\nTRAINING CONFIGURATION:")
     print(f"  Timesteps: {cfg.timesteps:,}")
@@ -482,7 +488,7 @@ def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) ->
     print(f"  Steps per env per update: {cfg.n_steps}")
     print(f"  Batch size: {cfg.batch_size}")
     print(f"  Effective samples per update: {cfg.n_envs * cfg.n_steps:,}")
-    
+
     # PPO hyperparameters
     print("\nPPO HYPERPARAMETERS:")
     print(f"  Learning rate: {cfg.learning_rate}")
@@ -493,32 +499,32 @@ def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) ->
     print(f"  Entropy coef: {cfg.ent_coef}")
     print(f"  Value function coef: {cfg.vf_coef}")
     print(f"  Max gradient norm: {cfg.max_grad_norm}")
-    
+
     # Network architecture
     print("\nNETWORK ARCHITECTURE:")
     print(f"  Policy layers: {cfg.pi_layers}")
     print(f"  Value layers: {cfg.vf_layers}")
     print(f"  Activation: {cfg.activation}")
-    
+
     # Track info
     print("\nTRACK:")
     print(f"  Points: {len(track.centerline)}")
     print(f"  Width: {track.width}m")
     print(f"  Interpolation: {track.interpolation_resolution} points")
-    
+
     # Vehicle info
     print("\nVEHICLE:")
     print(f"  Wheelbase: {spec.wheelbase}m")
     print(f"  Track width: {spec.track_width}m")
     print(f"  Max steering: {np.degrees(spec.max_steering_angle):.1f}°")
-    
+
     # Observation space
     print("\nOBSERVATION SPACE (21D - Track-Relative):")
     print("  Vehicle Dynamics (5D): speed, lateral vel, yaw rate, slip angle, steering")
     print("  Track Position (5D): lateral offset, heading error, progress, boundaries")
     print("  Lookahead (8D): 4 points ahead (distance, angle)")
     print("  Control Context (3D): prev throttle, brake, steer")
-    
+
     # Curriculum
     print("\nCURRICULUM LEARNING:")
     print("  Stage 1: Driving School (5x track, never terminate)")
@@ -527,17 +533,17 @@ def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) ->
     print("  Stage 4: Full License (1.8x track)")
     print("  Stage 5: Racing Pro (1.2x track)")
     print("  Stage 6: Champion (1x track, strict)")
-    
+
     # Vectorization
     print("\nVECTORIZED TRAINING:")
     print(f"  Method: {'SubprocVecEnv' if use_subproc else 'DummyVecEnv'}")
     print(f"  Obs normalization: {cfg.normalize_obs}")
     print(f"  Reward normalization: {cfg.normalize_reward}")
-    
+
     # Gear info
     gear_info = get_gear_speed_info(spec)
-    print(f"\nSPEED LIMITS:")
+    print("\nSPEED LIMITS:")
     print(f"  Top speed: {gear_info['top_speed_kmh']:.1f} km/h")
     print(f"  RPM limiter: {gear_info['rpm_limiter']:,.0f}")
-    
+
     print("=" * 70)

@@ -1,8 +1,6 @@
 from __future__ import annotations
+
 import numpy as np
-import matplotlib.pyplot as plt
-
-
 
 
 def plot_track(ax, center: np.ndarray, left: np.ndarray, right: np.ndarray):
@@ -15,7 +13,12 @@ def plot_track(ax, center: np.ndarray, left: np.ndarray, right: np.ndarray):
 
 
 
-def plot_trajectories(ax, optimal: np.ndarray | None = None, past: np.ndarray | None = None, pred: np.ndarray | None = None):
+def plot_trajectories(
+    ax,
+    optimal: np.ndarray | None = None,
+    past: np.ndarray | None = None,
+    pred: np.ndarray | None = None,
+):
     if optimal is not None:
         ax.plot(optimal[:,0], optimal[:,1], label="Racing line (opt)", linewidth=2.0)
     if past is not None:

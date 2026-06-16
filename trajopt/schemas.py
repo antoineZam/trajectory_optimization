@@ -6,10 +6,9 @@ ensuring type safety and validation before execution.
 """
 from __future__ import annotations
 
-from typing import Annotated, List, Tuple
+from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
 
 # =============================================================================
 # Track Schema
@@ -21,7 +20,7 @@ class TrackSchema(BaseModel):
 
     name: str = Field(..., min_length=1, description="Track name identifier")
     width: Annotated[float, Field(gt=0, description="Track width in meters")]
-    centerline: List[Tuple[float, float]] = Field(
+    centerline: list[tuple[float, float]] = Field(
         ..., min_length=3, description="List of (x, y) coordinates defining the track centerline"
     )
 
@@ -31,10 +30,10 @@ class TrackSchema(BaseModel):
         """Ensure centerline points are valid coordinate pairs."""
         if not isinstance(v, list):
             raise ValueError("centerline must be a list")
-        
+
         validated = []
         for i, point in enumerate(v):
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
+            if not isinstance(point, list | tuple) or len(point) != 2:
                 raise ValueError(f"centerline[{i}] must be a pair of coordinates, got {point}")
             try:
                 validated.append((float(point[0]), float(point[1])))
@@ -80,10 +79,10 @@ class ChassisSchema(BaseModel):
     """Vehicle chassis configuration."""
 
     masse_totale: Annotated[float, Field(gt=0, description="Total vehicle mass in kg")]
-    centre_de_gravite: Tuple[float, float, float] = Field(
+    centre_de_gravite: tuple[float, float, float] = Field(
         ..., description="Center of gravity (x, y, z) in meters"
     )
-    moment_inertie: Tuple[float, float, float] = Field(
+    moment_inertie: tuple[float, float, float] = Field(
         ..., description="Moments of inertia (Ix, Iy, Iz) in kg·m²"
     )
     coefficient_trainee: Annotated[float, Field(ge=0, description="Drag coefficient (Cx)")]
@@ -91,8 +90,12 @@ class ChassisSchema(BaseModel):
     repartition_masses: MassDistribution
     empattement: Annotated[float, Field(gt=0, description="Wheelbase in meters")]
     voie: Annotated[float, Field(gt=0, description="Track width in meters")]
-    angle_braquage_max: Annotated[float, Field(gt=0, le=1.5, description="Max steering angle in radians")]
-    facteur_vitesse_braquage: Annotated[float, Field(ge=0, description="Speed-dependent steering reduction factor")]
+    angle_braquage_max: Annotated[
+        float, Field(gt=0, le=1.5, description="Max steering angle in radians")
+    ]
+    facteur_vitesse_braquage: Annotated[
+        float, Field(ge=0, description="Speed-dependent steering reduction factor")
+    ]
     rayon_braquage_min: Annotated[float, Field(gt=0, description="Minimum turn radius in meters")]
 
     @field_validator("centre_de_gravite", "moment_inertie", mode="before")
@@ -111,15 +114,17 @@ class ChassisSchema(BaseModel):
 class PowertrainSchema(BaseModel):
     """Vehicle powertrain configuration."""
 
-    courbe_couple_moteur: List[Tuple[float, float]] = Field(
+    courbe_couple_moteur: list[tuple[float, float]] = Field(
         ..., min_length=2, description="Torque curve as [(RPM, Torque_Nm), ...]"
     )
     limiteur_rpm: Annotated[float, Field(gt=0, description="RPM limiter")]
-    rapports_boite_de_vitesse: List[float] = Field(
+    rapports_boite_de_vitesse: list[float] = Field(
         ..., min_length=1, description="Gear ratios (1st, 2nd, ...)"
     )
     rapport_pont_final: Annotated[float, Field(gt=0, description="Final drive ratio")]
-    efficacite_transmission: Annotated[float, Field(gt=0, le=1, description="Driveline efficiency (0-1)")]
+    efficacite_transmission: Annotated[
+        float, Field(gt=0, le=1, description="Driveline efficiency (0-1)")
+    ]
 
     @field_validator("courbe_couple_moteur", mode="before")
     @classmethod
@@ -127,10 +132,10 @@ class PowertrainSchema(BaseModel):
         """Validate torque curve format."""
         if not isinstance(v, list):
             raise ValueError("courbe_couple_moteur must be a list")
-        
+
         validated = []
         for i, point in enumerate(v):
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
+            if not isinstance(point, list | tuple) or len(point) != 2:
                 raise ValueError(f"courbe_couple_moteur[{i}] must be (RPM, Torque) pair")
             rpm, torque = float(point[0]), float(point[1])
             if rpm < 0:
@@ -241,13 +246,13 @@ class VehicleSchema(BaseModel):
 
 def validate_track_data(data: dict) -> TrackSchema:
     """Validate track JSON data and return a TrackSchema instance.
-    
+
     Args:
         data: Raw dictionary from JSON file.
-        
+
     Returns:
         Validated TrackSchema instance.
-        
+
     Raises:
         pydantic.ValidationError: If validation fails.
     """
@@ -256,13 +261,13 @@ def validate_track_data(data: dict) -> TrackSchema:
 
 def validate_vehicle_data(data: dict) -> VehicleSchema:
     """Validate vehicle JSON/YAML data and return a VehicleSchema instance.
-    
+
     Args:
         data: Raw dictionary from JSON/YAML file or Hydra config.
-        
+
     Returns:
         Validated VehicleSchema instance.
-        
+
     Raises:
         pydantic.ValidationError: If validation fails.
     """

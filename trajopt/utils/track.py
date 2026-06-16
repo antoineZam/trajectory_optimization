@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import splprep, splev
+from scipy.interpolate import splev, splprep
 from scipy.spatial import cKDTree
 from shapely.affinity import rotate, translate
 from shapely.geometry import LineString, Point, Polygon
@@ -44,7 +44,7 @@ class Track:
         if self._interpolated_right is None:
             self._compute_interpolated_track()
         return self._interpolated_right
-    
+
     @property
     def interpolated_centerline(self) -> np.ndarray:
         """Get high-resolution interpolated centerline for smooth path following."""
@@ -59,38 +59,43 @@ class Track:
             centerline = self.centerline
             if not np.allclose(centerline[0], centerline[-1], atol=1e-6):
                 centerline = np.vstack([centerline, centerline[0]])
-            
+
             # Parameterize the centerline with spline interpolation
             # Use periodic spline for closed tracks
-            tck, u = splprep([centerline[:, 0], centerline[:, 1]], 
+            tck, u = splprep([centerline[:, 0], centerline[:, 1]],
                            s=0, k=3, per=True)  # s=0 for exact interpolation, k=3 for cubic
-            
+
             # Generate high-resolution interpolated points
             u_new = np.linspace(0, 1, self.interpolation_resolution, endpoint=False)
             interp_x, interp_y = splev(u_new, tck)
             self._interpolated_centerline = np.column_stack([interp_x, interp_y])
-            
+
             # Compute smooth boundaries by offsetting the interpolated centerline
             self._interpolated_left = self._offset_interpolated_line(
                 self._interpolated_centerline, self.width/2)
             self._interpolated_right = self._offset_interpolated_line(
                 self._interpolated_centerline, -self.width/2)
-                
+
         except Exception as e:
             print(f"Warning: Spline interpolation failed ({e}), using original boundaries")
             # Fallback to original method
             self._interpolated_centerline = self.centerline
             self._interpolated_left = offset_polyline(self.centerline, +self.width/2)
             self._interpolated_right = offset_polyline(self.centerline, -self.width/2)
-        
+
         # Build K-D trees for fast lookups
         self._centerline_kdtree = cKDTree(self._interpolated_centerline)
         self._left_boundary_kdtree = cKDTree(self._interpolated_left)
         self._right_boundary_kdtree = cKDTree(self._interpolated_right)
-        
+
         # Create a Shapely Polygon for the track for accurate inside/outside checks
         # The polygon is created from the exterior (left) and interior (right) boundaries
-        self._track_polygon = Polygon(np.vstack([self._interpolated_left, self._interpolated_right[::-1]]))
+        self._track_polygon = Polygon(
+            np.vstack([
+                self._interpolated_left,
+                self._interpolated_right[::-1],
+            ])
+        )
 
     def _offset_interpolated_line(self, line: np.ndarray, offset: float) -> np.ndarray:
         """Create offset boundary from interpolated centerline."""
@@ -100,10 +105,10 @@ class Track:
         tangent_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
         tangent_norms = np.where(tangent_norms > 1e-8, tangent_norms, 1.0)
         unit_tangents = tangents / tangent_norms
-        
+
         # Compute normal vectors (perpendicular to tangents)
         normals = np.stack([-unit_tangents[:, 1], unit_tangents[:, 0]], axis=1)
-        
+
         # Offset points by normal * offset distance
         boundary = line + normals * offset
         return boundary
@@ -115,11 +120,11 @@ class Track:
         """
         if self._interpolated_left is None:
             self._compute_interpolated_track()
-            
+
         # Query K-D trees for closest distances
         dist_left, _ = self._left_boundary_kdtree.query(point, k=1)
         dist_right, _ = self._right_boundary_kdtree.query(point, k=1)
-        
+
         return dist_left, dist_right
 
     def is_point_inside_track(self, point: np.ndarray) -> bool:
@@ -132,10 +137,10 @@ class Track:
         """Get progress around track (0-1) based on closest point on interpolated centerline."""
         if self._interpolated_centerline is None:
             self._compute_interpolated_track()
-            
+
         # Find closest point on interpolated centerline using K-D Tree
         _, closest_idx = self._centerline_kdtree.query(point, k=1)
-        
+
         # Progress is the index divided by total points
         return closest_idx / len(self._interpolated_centerline)
 
@@ -148,7 +153,7 @@ class Track:
 
 
     @staticmethod
-    def from_json(d: dict, interpolation_resolution: int = 2000) -> "Track":
+    def from_json(d: dict, interpolation_resolution: int = 2000) -> Track:
         return Track(
             name=d["name"],
             width=float(d["width"]),
@@ -198,23 +203,23 @@ def save_track_json(track: Track, path: str) -> None:
 
 def load_track_json(path: str, interpolation_resolution: int = 2000) -> Track:
     """Load and validate track from JSON file.
-    
+
     Args:
         path: Path to track JSON file.
         interpolation_resolution: Resolution for track interpolation.
-        
+
     Returns:
         Validated Track instance.
-        
+
     Raises:
         pydantic.ValidationError: If track data fails validation.
     """
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    
+
     # Validate data with Pydantic schema
     validated = validate_track_data(data)
-    
+
     return Track(
         name=validated.name,
         width=validated.width,

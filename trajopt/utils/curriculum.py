@@ -14,33 +14,33 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 
 @dataclass
 class CurriculumStage:
     """Defines a single stage of the curriculum."""
-    
+
     name: str
     description: str
-    
+
     # Track parameters
     track_width_multiplier: float  # Multiply base track width
-    
+
     # Episode parameters
     max_episode_steps: int
     checkpoint_threshold: int  # Minimum checkpoints to consider "success"
-    
+
     # Termination conditions
     termination_mode: str  # "never", "soft", "normal", "strict"
     wheels_required_inside: int  # For termination check
-    
+
     # Graduation criteria (realistic for RL)
     min_episodes: int  # Minimum episodes before graduation possible
     target_episodes: int  # Expected episodes to graduate
     success_rate_threshold: float  # Minimum success rate to graduate
     early_graduation_rate: float  # If success rate exceeds this, graduate early
-    
+
     # Reward modifications
     checkpoint_reward_multiplier: float
     progress_bonus: float  # Additional per-step bonus
@@ -49,23 +49,23 @@ class CurriculumStage:
 class CurriculumLearning:
     """
     Manages progressive training curriculum for racing agent.
-    
+
     The curriculum is designed with realistic RL expectations:
     - Success rates of 15-30% are considered good during training
     - Early stages focus on basic competencies (forward motion, not crashing)
     - Later stages refine racing line and speed optimization
     """
-    
+
     def __init__(self):
         self.current_stage = 0
         self.stage_start_episode = 0
         self.stage_episodes_completed = 0
         self.stage_successes = 0
-        
+
         # Rolling window for recent success rate (more responsive than all-time)
-        self.recent_results: List[bool] = []
+        self.recent_results: list[bool] = []
         self.recent_window_size = 50
-        
+
         # Define curriculum stages with realistic RL thresholds
         self.stages = [
             # Stage 0: "Driving School" - Just learn to move forward
@@ -84,7 +84,7 @@ class CurriculumLearning:
                 checkpoint_reward_multiplier=2.0,  # Double checkpoint rewards
                 progress_bonus=0.1,  # Extra encouragement
             ),
-            
+
             # Stage 1: "Learner's Permit" - Learn to stay on track
             CurriculumStage(
                 name="learners_permit",
@@ -101,7 +101,7 @@ class CurriculumLearning:
                 checkpoint_reward_multiplier=1.75,
                 progress_bonus=0.05,
             ),
-            
+
             # Stage 2: "Provisional License" - Learn boundaries
             CurriculumStage(
                 name="provisional_license",
@@ -118,7 +118,7 @@ class CurriculumLearning:
                 checkpoint_reward_multiplier=1.5,
                 progress_bonus=0.03,
             ),
-            
+
             # Stage 3: "Full License" - Complete laps with some tolerance
             CurriculumStage(
                 name="full_license",
@@ -135,7 +135,7 @@ class CurriculumLearning:
                 checkpoint_reward_multiplier=1.25,
                 progress_bonus=0.01,
             ),
-            
+
             # Stage 4: "Racing Pro" - Standard racing conditions
             CurriculumStage(
                 name="racing_pro",
@@ -152,7 +152,7 @@ class CurriculumLearning:
                 checkpoint_reward_multiplier=1.0,
                 progress_bonus=0.0,
             ),
-            
+
             # Stage 5: "Champion" - Final stage, optimal performance
             CurriculumStage(
                 name="champion",
@@ -170,106 +170,106 @@ class CurriculumLearning:
                 progress_bonus=0.0,
             ),
         ]
-        
+
         # Statistics tracking
-        self.graduation_history: List[Dict[str, Any]] = []
+        self.graduation_history: list[dict[str, Any]] = []
         self.total_episodes = 0
-    
+
     def get_current_stage(self) -> CurriculumStage:
         """Get the current curriculum stage."""
         return self.stages[min(self.current_stage, len(self.stages) - 1)]
-    
+
     def get_stage_name(self) -> str:
         """Get current stage name for logging."""
         return self.get_current_stage().name
-    
+
     def record_episode_result(
         self, checkpoints_hit: int, lap_completed: bool, episode_num: int
     ) -> bool:
         """
         Record episode result and check for stage progression.
-        
+
         Args:
             checkpoints_hit: Number of checkpoints reached this episode.
             lap_completed: Whether a full lap was completed.
             episode_num: Current episode number.
-            
+
         Returns:
             True if stage advanced, False otherwise.
         """
         self.stage_episodes_completed += 1
         self.total_episodes = episode_num
-        
+
         current_stage = self.get_current_stage()
-        
+
         # Check if episode was successful for this stage
         success = checkpoints_hit >= current_stage.checkpoint_threshold
         if success:
             self.stage_successes += 1
-        
+
         # Update rolling window
         self.recent_results.append(success)
         if len(self.recent_results) > self.recent_window_size:
             self.recent_results.pop(0)
-        
+
         # Check for stage advancement
         if self._should_advance_stage():
             return self._advance_stage(episode_num)
-        
+
         return False
-    
+
     def _get_recent_success_rate(self) -> float:
         """Get success rate from recent episodes (more responsive)."""
         if not self.recent_results:
             return 0.0
         return sum(self.recent_results) / len(self.recent_results)
-    
+
     def _get_overall_success_rate(self) -> float:
         """Get overall success rate for current stage."""
         if self.stage_episodes_completed == 0:
             return 0.0
         return self.stage_successes / self.stage_episodes_completed
-    
+
     def _should_advance_stage(self) -> bool:
         """Check if criteria are met to advance to next stage."""
         if self.current_stage >= len(self.stages) - 1:
             return False  # Already at final stage
-        
+
         current_stage = self.get_current_stage()
-        
+
         # Must have completed minimum episodes
         if self.stage_episodes_completed < current_stage.min_episodes:
             return False
-        
+
         # Check for early graduation (exceptional performance)
         recent_rate = self._get_recent_success_rate()
         if recent_rate >= current_stage.early_graduation_rate:
             return True
-        
+
         # Check for normal graduation
         if self.stage_episodes_completed >= current_stage.target_episodes:
             overall_rate = self._get_overall_success_rate()
             if overall_rate >= current_stage.success_rate_threshold:
                 return True
-        
+
         # Also allow graduation if doing well for extended period
         if self.stage_episodes_completed >= current_stage.target_episodes * 1.5:
             # Lower the bar if taking too long (agent might be stuck)
             overall_rate = self._get_overall_success_rate()
             if overall_rate >= current_stage.success_rate_threshold * 0.5:
                 return True
-        
+
         return False
-    
+
     def _advance_stage(self, episode_num: int) -> bool:
         """Advance to next curriculum stage."""
         if self.current_stage >= len(self.stages) - 1:
             return False
-        
+
         old_stage = self.get_current_stage()
         overall_rate = self._get_overall_success_rate()
         recent_rate = self._get_recent_success_rate()
-        
+
         # Determine graduation type
         if recent_rate >= old_stage.early_graduation_rate:
             graduation_type = "EARLY (exceptional performance!)"
@@ -277,7 +277,7 @@ class CurriculumLearning:
             graduation_type = "EXTENDED (minimum criteria met)"
         else:
             graduation_type = "NORMAL"
-        
+
         # Record graduation
         graduation_info = {
             "stage": old_stage.name,
@@ -289,14 +289,14 @@ class CurriculumLearning:
             "timestamp": time.time(),
         }
         self.graduation_history.append(graduation_info)
-        
+
         # Advance stage
         self.current_stage += 1
         self.stage_start_episode = episode_num
         self.stage_episodes_completed = 0
         self.stage_successes = 0
         self.recent_results.clear()
-        
+
         # Print graduation message
         new_stage = self.get_current_stage()
         print("\n" + "=" * 60)
@@ -306,23 +306,23 @@ class CurriculumLearning:
         print(f"   Episodes at stage: {graduation_info['episodes_at_stage']}")
         print(f"   Overall success rate: {overall_rate:.1%}")
         print(f"   Recent success rate: {recent_rate:.1%}")
-        print(f"")
+        print("")
         print(f"   NEW CHALLENGE: {new_stage.description}")
         print(f"   Track width: {new_stage.track_width_multiplier:.1f}x")
         print(f"   Checkpoint goal: {new_stage.checkpoint_threshold}/4")
         print(f"   Termination mode: {new_stage.termination_mode}")
         print("=" * 60 + "\n")
-        
+
         return True
-    
-    def get_track_parameters(self) -> Dict[str, float]:
+
+    def get_track_parameters(self) -> dict[str, float]:
         """Get current track modification parameters."""
         stage = self.get_current_stage()
         return {
             "width_multiplier": stage.track_width_multiplier,
         }
-    
-    def get_episode_parameters(self) -> Dict[str, Any]:
+
+    def get_episode_parameters(self) -> dict[str, Any]:
         """Get current episode parameters."""
         stage = self.get_current_stage()
         return {
@@ -330,25 +330,28 @@ class CurriculumLearning:
             "termination_mode": stage.termination_mode,
             "wheels_required_inside": stage.wheels_required_inside,
         }
-    
-    def get_reward_parameters(self) -> Dict[str, float]:
+
+    def get_reward_parameters(self) -> dict[str, float]:
         """Get current reward modifications."""
         stage = self.get_current_stage()
         return {
             "checkpoint_multiplier": stage.checkpoint_reward_multiplier,
             "progress_bonus": stage.progress_bonus,
         }
-    
-    def get_progress_info(self) -> Dict[str, Any]:
+
+    def get_progress_info(self) -> dict[str, Any]:
         """Get current curriculum progress information."""
         stage = self.get_current_stage()
         overall_rate = self._get_overall_success_rate()
         recent_rate = self._get_recent_success_rate()
-        
+
         # Calculate progress toward graduation
         episode_progress = min(1.0, self.stage_episodes_completed / stage.target_episodes)
-        success_progress = min(1.0, overall_rate / stage.success_rate_threshold) if stage.success_rate_threshold > 0 else 1.0
-        
+        success_progress = (
+            min(1.0, overall_rate / stage.success_rate_threshold)
+            if stage.success_rate_threshold > 0 else 1.0
+        )
+
         return {
             "current_stage": self.current_stage,
             "total_stages": len(self.stages),
@@ -365,12 +368,12 @@ class CurriculumLearning:
             "success_progress": success_progress,
             "ready_to_advance": self._should_advance_stage(),
         }
-    
+
     def print_curriculum_status(self) -> None:
         """Print detailed curriculum status."""
         info = self.get_progress_info()
         stage = self.get_current_stage()
-        
+
         # Determine status emoji
         if info["ready_to_advance"]:
             status = "✅ READY TO GRADUATE"
@@ -380,21 +383,40 @@ class CurriculumLearning:
             status = "🔄 Warming up"
         else:
             status = "📊 Training"
-        
+
         print(f"\n{'─' * 50}")
-        print(f"CURRICULUM: Stage {info['current_stage'] + 1}/{info['total_stages']} - {info['stage_name'].upper()}")
+        stage_num = info['current_stage'] + 1
+        total = info['total_stages']
+        name = info['stage_name'].upper()
+        print(f"CURRICULUM: Stage {stage_num}/{total} - {name}")
         print(f"{'─' * 50}")
         print(f"Status: {status}")
         print(f"Goal: {info['stage_description']}")
-        print(f"")
-        print(f"Episodes: {info['episodes_completed']}/{info['target_episodes']} (min: {info['min_episodes']})")
-        print(f"Success rate: {info['overall_success_rate']:.1%} overall, {info['recent_success_rate']:.1%} recent")
-        print(f"Need: {info['target_success_rate']:.1%} to graduate, {info['early_graduation_rate']:.1%} for early")
-        print(f"")
-        print(f"Track: {stage.track_width_multiplier:.1f}x width | Max steps: {stage.max_episode_steps}")
-        print(f"Checkpoint goal: {stage.checkpoint_threshold}/4 | Termination: {stage.termination_mode}")
+        print("")
+        print(
+            f"Episodes: {info['episodes_completed']}"
+            f"/{info['target_episodes']}"
+            f" (min: {info['min_episodes']})"
+        )
+        print(
+            f"Success rate: {info['overall_success_rate']:.1%}"
+            f" overall, {info['recent_success_rate']:.1%} recent"
+        )
+        print(
+            f"Need: {info['target_success_rate']:.1%} to graduate,"
+            f" {info['early_graduation_rate']:.1%} for early"
+        )
+        print("")
+        print(
+            f"Track: {stage.track_width_multiplier:.1f}x width"
+            f" | Max steps: {stage.max_episode_steps}"
+        )
+        print(
+            f"Checkpoint goal: {stage.checkpoint_threshold}/4"
+            f" | Termination: {stage.termination_mode}"
+        )
         print(f"{'─' * 50}")
-    
+
     def get_summary(self) -> str:
         """Get a one-line summary of curriculum status."""
         info = self.get_progress_info()
