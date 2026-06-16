@@ -356,7 +356,7 @@ class RacingEnv(gym.Env):
 
         # Sample points at increasing distances ahead
         # Spacing: 10, 25, 50, 100 meters ahead (approximately)
-        lookahead_spacing = [20, 50, 100, 200]  # indices on interpolated track
+        lookahead_spacing = [20.0, 50.0, 80.0, 100.0]  # meters on interpolated track
 
         for i, spacing in enumerate(lookahead_spacing):
             # Get point ahead on track (wrap around for closed track)
