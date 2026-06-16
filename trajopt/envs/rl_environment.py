@@ -440,8 +440,9 @@ class RacingEnv(gym.Env):
 
         # Heading error (as cosine: 1 = aligned, -1 = opposite direction)
         heading_diff = s.yaw - track_state["track_heading"]
-        heading_diff = np.arctan2(np.sin(heading_diff), np.cos(heading_diff))
-        heading_error_normalized = np.cos(heading_diff)  # [−1, 1]
+        heading_diff_normalized = heading_diff / np.pi
+        heading_diff = np.arctan2(np.sin(heading_diff_normalized), np.cos(heading_diff_normalized))
+        heading_error_normalized = np.cos(heading_diff_normalized)  # [−1, 1]
 
         # Track progress
         track_progress = track_state["track_progress"]
@@ -468,6 +469,11 @@ class RacingEnv(gym.Env):
         prev_brake = self.prev_brake
         prev_steer = self.prev_steer
 
+        actual_steering_angle = prev_steer * self.spec.max_steering_angle
+        max_steer_allowed = get_max_steering_angle(self.spec, speed)
+        applied_steer = np.clip(actual_steering_angle, -max_steer_allowed, max_steer_allowed)
+
+        steering_angle_normalized = applied_steer / self.spec.max_steering_angle
         # =====================================================================
         # Assemble Observation
         # =====================================================================
