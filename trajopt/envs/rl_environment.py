@@ -441,7 +441,7 @@ class RacingEnv(gym.Env):
 
         # Heading error (as cosine: 1 = aligned, -1 = opposite direction)
         heading_diff = s.yaw - track_state["track_heading"]
-        heading_diff = np.arctan2(np.sin(heading_diff_normalized), np.cos(heading_diff_normalized))
+        heading_diff = np.arctan2(np.sin(heading_diff), np.cos(heading_diff))
         heading_error_normalized = heading_diff / np.pi  # [−1, 1]
 
         # Track progress
