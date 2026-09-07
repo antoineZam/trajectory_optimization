@@ -11,10 +11,12 @@ import numpy as np
 import pytest
 
 from physics.physics_engine import (
+    CLAMP_EVENTS,
     VehicleSpec,
     VehicleState,
     aero_forces,
     get_max_steering_angle,
+    reset_clamp_events,
     step_dynamics,
     tire_mu,
 )
@@ -115,15 +117,32 @@ def test_lateral_acceleration_stays_within_tire_grip(vehicle_spec: VehicleSpec):
     assert peak <= limit, f"peak path lateral acceleration {peak:.2f} g exceeds {limit:.2f} g"
 
 
-def test_safety_clamps_are_not_load_bearing(vehicle_spec: VehicleSpec):
-    """Tire physics, not the +/-20 rad/s clamp, must bound the yaw rate."""
-    state = _state(vx=25.0)
-    for _ in range(60):
-        state = step_dynamics(
-            vehicle_spec, state, DT, 1.0, 0.0, vehicle_spec.max_steering_angle
-        )
-    assert abs(state.yaw_rate) < 19.0, "yaw rate is being held by the safety clamp"
-    assert abs(state.vy) < 49.0, "lateral velocity is being held by the safety clamp"
+def test_safety_clamps_never_engage(vehicle_spec: VehicleSpec):
+    """No safety clamp may fire under any admissible control input.
+
+    A clamp firing means the simulation left the regime the tire model
+    describes. They used to be load-bearing and silent: full lock at 25 m/s
+    saturated the +/-20 rad/s yaw clamp and reported 3.21 g of lateral
+    acceleration on a mu-1.6 tire. CLAMP_EVENTS makes that checkable instead
+    of invisible.
+    """
+    reset_clamp_events()
+
+    for throttle, brake, steer_fraction in (
+        (1.0, 0.0, 1.0),    # full throttle, full lock
+        (0.0, 1.0, 1.0),    # full brakes, full lock
+        (1.0, 1.0, -1.0),   # both pedals, opposite lock
+        (0.0, 0.0, 0.0),    # coast
+    ):
+        for speed in (5.0, 25.0, 60.0):
+            state = _state(vx=speed)
+            for _ in range(200):
+                state = step_dynamics(
+                    vehicle_spec, state, DT, throttle, brake,
+                    steer_fraction * vehicle_spec.max_steering_angle,
+                )
+
+    assert not any(CLAMP_EVENTS.values()), f"safety clamps engaged: {CLAMP_EVENTS}"
 
 
 # =============================================================================

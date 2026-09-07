@@ -101,6 +101,28 @@ BRAKE_DEADBAND_MPS = 0.1
 # How fast the usable turn radius grows with speed, per m/s.
 STEERING_RADIUS_GAIN = 0.05
 
+# Safety clamp bounds. Reaching any of these means the simulation left the
+# regime the tire model describes; see CLAMP_EVENTS.
+MAX_LATERAL_VELOCITY_MPS = 50.0
+MAX_YAW_RATE_RADS = 20.0
+MAX_POSITION_M = 1e6
+
+# Count of how often each safety clamp engaged. Non-zero values invalidate a
+# run's physics, so check it after training rather than trusting the clamps to
+# quietly paper over a divergence.
+CLAMP_EVENTS: dict[str, int] = {
+    "lateral_velocity": 0,
+    "yaw_rate": 0,
+    "position": 0,
+    "non_finite": 0,
+}
+
+
+def reset_clamp_events() -> None:
+    """Zero the safety-clamp counters, e.g. at the start of an episode."""
+    for key in CLAMP_EVENTS:
+        CLAMP_EVENTS[key] = 0
+
 
 # -------------------------
 # Modèle dynamique (bicycle 2D + aéro + transmission simplifiée)
@@ -420,17 +442,31 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         ratio = spec.gear_ratios[current_gear-1] * spec.final_drive
         rpm = np.clip(wheel_omega * ratio * 9.5493, 800.0, spec.rpm_limiter)
 
-    # Safety clamps
-    x = np.clip(x, -1e6, 1e6)
-    y = np.clip(y, -1e6, 1e6)
-    vy = np.clip(vy, -50.0, 50.0)
-    yaw_rate = np.clip(yaw_rate, -20.0, 20.0)
+    # Safety clamps. These are diagnostics, not part of the model: if one
+    # engages, the simulation has entered a regime the tire model does not
+    # describe. They used to be load-bearing and silent -- full lock at 25 m/s
+    # ran the yaw rate into the +/-20 rad/s limit and reported 3.21 g of
+    # lateral acceleration on a mu-1.6 tire, so the vehicle was being held
+    # together by the clamps rather than by the physics. Every trip is now
+    # counted in CLAMP_EVENTS so a run can be checked instead of assumed.
+    if abs(vy) > MAX_LATERAL_VELOCITY_MPS:
+        CLAMP_EVENTS["lateral_velocity"] += 1
+    if abs(yaw_rate) > MAX_YAW_RATE_RADS:
+        CLAMP_EVENTS["yaw_rate"] += 1
+    if abs(x) > MAX_POSITION_M or abs(y) > MAX_POSITION_M:
+        CLAMP_EVENTS["position"] += 1
+
+    x = np.clip(x, -MAX_POSITION_M, MAX_POSITION_M)
+    y = np.clip(y, -MAX_POSITION_M, MAX_POSITION_M)
+    vy = np.clip(vy, -MAX_LATERAL_VELOCITY_MPS, MAX_LATERAL_VELOCITY_MPS)
+    yaw_rate = np.clip(yaw_rate, -MAX_YAW_RATE_RADS, MAX_YAW_RATE_RADS)
     yaw = np.arctan2(np.sin(yaw), np.cos(yaw))
     rpm = np.clip(rpm, 500.0, spec.rpm_limiter * 1.1)
 
     # NaN/inf guard: return previous state unchanged instead of teleporting
     if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(vx) and np.isfinite(vy) and
             np.isfinite(yaw) and np.isfinite(yaw_rate) and np.isfinite(rpm)):
+        CLAMP_EVENTS["non_finite"] += 1
         return s
 
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
