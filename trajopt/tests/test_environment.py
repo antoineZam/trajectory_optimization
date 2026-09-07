@@ -113,13 +113,6 @@ def test_lookahead_points_are_at_the_requested_distances(env: RacingEnv):
     np.testing.assert_allclose(distances, expected, rtol=0.25)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B2: track_progress = closest_idx / len(centerline) is in [0, 1), so "
-    "int(progress / 0.25) caps at 3. Checkpoint 4 -- and therefore "
-    "lap_completed, the lap bonus and every curriculum graduation -- is "
-    "unreachable. Needs cumulative unwrapped progress.",
-)
 def test_a_full_lap_awards_all_checkpoints_and_completes(env: RacingEnv):
     """Driving one full lap must award 4/4 checkpoints and set lap_completed.
 
@@ -183,12 +176,6 @@ def test_progress_reward_is_conservative(env: RacingEnv):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Completing a lap sets truncated=True, so SB3 bootstraps V(s') past "
-    "the finish line and the lap bonus is counted twice. A finished lap is a "
-    "task-terminal state: terminated=True.",
-)
 def test_lap_completion_is_terminal_not_truncated(env: RacingEnv):
     """`lap_completed` must map to `terminated`, not `truncated`."""
     env.reset()

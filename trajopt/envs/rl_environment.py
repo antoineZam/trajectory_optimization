@@ -167,6 +167,10 @@ class RacingEnv(gym.Env):
         self.step_count = 0
         self.track_progress = 0.0
         self.last_track_progress = 0.0  # For computing progress delta
+        # Unwrapped lap counter: laps completed since reset. Unlike
+        # track_progress this is not confined to [0, 1), so it can express
+        # "a lap is finished" at all.
+        self.cumulative_progress = 0.0
         self.lap_completed = False
         self.total_distance_traveled = 0.0  # Track total distance for metrics
 
@@ -558,6 +562,7 @@ class RacingEnv(gym.Env):
         self.step_count = 0
         self.track_progress = 0.0
         self.last_track_progress = 0.0
+        self.cumulative_progress = 0.0
         self.total_distance_traveled = 0.0
         self.lap_completed = False
         self.checkpoints_hit = set()
@@ -594,6 +599,12 @@ class RacingEnv(gym.Env):
         # Initialize previous position for distance tracking
         self._prev_position = np.array([x0, y0])
 
+        # Anchor the progress baseline to where the vehicle actually is, so
+        # cumulative_progress counts from the start position rather than from
+        # index 0. This matters as soon as the start state is randomised.
+        self.last_track_progress = self.track.get_track_progress(self._prev_position)
+        self.track_progress = self.last_track_progress
+
         # Start telemetry
         if self.telemetry:
             self.telemetry.start_episode(self.termination_stats["total_episodes"])
@@ -626,11 +637,15 @@ class RacingEnv(gym.Env):
         track_state = self._compute_track_state(current_pos)
         self._cached_track_state = track_state
 
+        # Progress accounting happens exactly once per step, here, so the
+        # reward and the checkpoint logic read the same numbers.
+        progress_delta = self._advance_progress(track_state["track_progress"])
+
         # Check checkpoint progress
-        checkpoint_hit = self._check_checkpoint(track_state["track_progress"])
+        checkpoint_hit = self._check_checkpoint()
 
         # Compute reward
-        reward = self._compute_reward(track_state, checkpoint_hit)
+        reward = self._compute_reward(track_state, checkpoint_hit, progress_delta)
 
         # Check termination conditions
         terminated, truncated = self._check_termination(track_state)
@@ -657,15 +672,59 @@ class RacingEnv(gym.Env):
 
         return self._get_obs(), reward, terminated, truncated, info
 
-    def _check_checkpoint(self, current_progress: float) -> bool:
-        """Check if we've reached the next checkpoint.
+    @staticmethod
+    def _unwrap_progress_delta(current: float, previous: float) -> float:
+        """Shortest signed step between two [0, 1) progress values.
 
-        Checkpoints are at 25%, 50%, 75%, 100% of track progress (1-indexed).
+        Args:
+            current: Progress this step.
+            previous: Progress last step.
+
+        Returns:
+            Signed delta in (-0.5, 0.5], so crossing the start/finish line
+            forwards reads as a small positive step rather than -0.99.
         """
-        checkpoint_spacing = 1.0 / self.cfg.num_checkpoints
-        # 1-indexed: checkpoint 1 triggers at 25%, 2 at 50%, etc.
-        checkpoint_id = int(current_progress / checkpoint_spacing)
-        checkpoint_id = min(checkpoint_id, self.cfg.num_checkpoints)
+        delta = current - previous
+        if delta > 0.5:
+            delta -= 1.0
+        elif delta < -0.5:
+            delta += 1.0
+        return delta
+
+    def _advance_progress(self, raw_progress: float) -> float:
+        """Advance the unwrapped lap counter and return this step's delta.
+
+        `raw_progress` is closest_idx / n_points: it lives in [0, 1) and wraps
+        at the start/finish line. `cumulative_progress` is the same signal
+        unwrapped, which is what checkpoint and lap detection need.
+
+        Args:
+            raw_progress: Progress reported by _compute_track_state.
+
+        Returns:
+            This step's signed progress delta, in laps.
+        """
+        delta = self._unwrap_progress_delta(raw_progress, self.last_track_progress)
+        self.cumulative_progress += delta
+        self.track_progress = raw_progress
+        self.last_track_progress = raw_progress
+        return delta
+
+    def _check_checkpoint(self) -> bool:
+        """Award the next checkpoint if cumulative progress has reached it.
+
+        Checkpoints are at 25%, 50%, 75% and 100% of a lap (1-indexed).
+
+        This previously divided the RAW progress signal by 1/num_checkpoints.
+        Raw progress is in [0, 1), so int() capped the id at num_checkpoints-1
+        and checkpoint 4 was unreachable. That made lap_completed permanently
+        false, and with it the lap bonus, the lap termination and every
+        curriculum graduation criterion -- all dead code. Worse, once progress
+        wrapped back towards 0 the id dropped while current_checkpoint stayed
+        at 3, so no further checkpoint was ever awarded on later laps either.
+        """
+        reached = int(self.cumulative_progress * self.cfg.num_checkpoints)
+        checkpoint_id = min(reached, self.cfg.num_checkpoints)
 
         if (
             checkpoint_id > 0
@@ -677,7 +736,9 @@ class RacingEnv(gym.Env):
             return True
         return False
 
-    def _compute_reward(self, track_state: dict, checkpoint_hit: bool) -> float:
+    def _compute_reward(
+        self, track_state: dict, checkpoint_hit: bool, progress_delta: float
+    ) -> float:
         """
         Compute the reward for the current step.
 
@@ -702,26 +763,13 @@ class RacingEnv(gym.Env):
         # =====================================================================
         # 1. PROGRESS REWARD (Primary learning signal)
         # =====================================================================
-        # Reward based on actual track progress (more robust than velocity)
-        current_progress = track_state["track_progress"]
-
-        # Handle wraparound at lap completion
-        progress_delta = current_progress - self.last_track_progress
-        if progress_delta < -0.5:  # Wrapped around (e.g., 0.99 -> 0.01)
-            progress_delta += 1.0
-        elif progress_delta > 0.5:  # Went backwards past start
-            progress_delta -= 1.0
-
-        # Per-step progress ~ 1/8000 ≈ 0.000125 for a full lap in max_steps.
-        # Multiply up so the dense signal is ~0.1-0.2 per step at good speed.
+        # progress_delta is the unwrapped, signed step computed once per step
+        # by _advance_progress.
         progress_reward = progress_delta * 1500.0 * self.cfg.progress_reward_scale
 
         # Only reward forward progress, don't penalize backwards (let termination handle that)
         if progress_reward > 0:
             reward += progress_reward
-
-        # Update for next step
-        self.last_track_progress = current_progress
 
         # Also track distance for telemetry
         if self._prev_position is not None:
@@ -771,25 +819,30 @@ class RacingEnv(gym.Env):
         if checkpoint_hit:
             checkpoint_reward = self.cfg.checkpoint_bonus * self._curriculum_checkpoint_multiplier
             reward += checkpoint_reward
-            print(
-                f"CHECKPOINT {len(self.checkpoints_hit)}"
-                f"/{self.cfg.num_checkpoints}"
-                f" HIT! (+{checkpoint_reward:.0f})"
-            )
+            # Only the telemetry-enabled worker prints. With laps now
+            # completable this fires several times per lap; from every worker
+            # it would flood console.log and interleave unreadably.
+            if self.telemetry:
+                print(
+                    f"CHECKPOINT {len(self.checkpoints_hit)}"
+                    f"/{self.cfg.num_checkpoints}"
+                    f" HIT! (+{checkpoint_reward:.0f})"
+                )
 
         # =====================================================================
         # 5. LAP COMPLETION BONUS
         # =====================================================================
-        if len(self.checkpoints_hit) >= self.cfg.num_checkpoints and not self.lap_completed:
+        if self.cumulative_progress >= 1.0 and not self.lap_completed:
             self.lap_completed = True
             reward += self.cfg.lap_completion_bonus
-            avg_speed = (
-                self.total_distance_traveled
-                / (self.step_count * self.cfg.dt)
-                if self.step_count > 0
-                else 0
-            )
-            print(f"LAP COMPLETED! Steps: {self.step_count}, Avg Speed: {avg_speed:.1f} m/s")
+            if self.telemetry:
+                avg_speed = (
+                    self.total_distance_traveled
+                    / (self.step_count * self.cfg.dt)
+                    if self.step_count > 0
+                    else 0
+                )
+                print(f"LAP COMPLETED! Steps: {self.step_count}, Avg Speed: {avg_speed:.1f} m/s")
 
         # =====================================================================
         # 6. CURRICULUM PROGRESS BONUS (Extra encouragement in early stages)
@@ -831,9 +884,13 @@ class RacingEnv(gym.Env):
             terminated = True
             self.termination_stats["off_track"] += 1
 
-        # Episode limits
+        # Episode limits.
+        # A finished lap is a task-terminal state, not a time-limit
+        # truncation: reporting it as truncated makes SB3 bootstrap V(s')
+        # past the finish line, so the lap bonus gets counted twice -- once
+        # as the bonus and again as the estimated value of the hereafter.
         if self.lap_completed:
-            truncated = True
+            terminated = True
             self.termination_stats["lap_completed"] += 1
         elif self.step_count >= self.cfg.max_steps:
             truncated = True

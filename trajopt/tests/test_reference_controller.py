@@ -37,24 +37,22 @@ def test_speed_profile_respects_cornering_and_braking_limits(track, vehicle_spec
 
 
 def test_reference_controller_completes_a_lap(env: RacingEnv):
-    """A full lap on the real 12 m track, without leaving it.
-
-    Asserts on cumulative unwrapped arc length rather than `env.lap_completed`,
-    because the environment's own lap detection is unreachable until B2 is
-    fixed -- see `test_environment.py`.
-    """
+    """A full lap on the real 12 m track, without leaving it."""
     controller = PurePursuitController(env.track, env.spec)
     result = drive(env, controller, laps=1.0)
 
     assert result["laps_completed"] >= 1.0, (
         f"only completed {result['laps_completed']:.3f} laps "
         f"({result['distance_m']:.0f} m) in {result['steps']} steps; "
-        f"terminated={result['terminated']}"
+        f"left_track={result['left_track']}"
     )
-    assert not result["terminated"], "the reference controller left the track"
+    assert not result["left_track"], "the reference controller left the track"
     assert result["min_wheels_inside"] == 4, (
         f"only {result['min_wheels_inside']} wheels stayed inside the track"
     )
+    # The environment must agree that the lap happened, not just the odometer.
+    assert result["lap_completed"], "env.lap_completed did not register the lap"
+    assert result["terminated"], "a finished lap must terminate the episode"
 
 
 def test_reference_lap_time_is_physically_plausible(env: RacingEnv):
@@ -76,18 +74,25 @@ def test_reference_lap_time_is_physically_plausible(env: RacingEnv):
     assert result["mean_speed"] > 15.0, f"mean speed only {result['mean_speed']:.1f} m/s"
 
 
-def test_multiple_laps_stay_stable(env: RacingEnv):
-    """Three consecutive laps, to catch drift that a single lap would hide.
+def test_repeated_lap_episodes_stay_stable(env: RacingEnv):
+    """Three consecutive lap episodes, to catch state that leaks across resets.
 
-    In particular this covers the start/finish seam: the boundary offsets and
-    the track polygon both used to be wrong there, flagging a centred car as
-    off-track on every crossing.
+    A finished lap terminates the episode, so covering several laps means
+    several episodes. This exercises the progress bookkeeping being cleared on
+    reset, and the start/finish seam, which both the boundary offsets and the
+    track polygon used to get wrong -- flagging a centred car as off-track on
+    every crossing.
     """
     controller = PurePursuitController(env.track, env.spec)
-    result = drive(env, controller, laps=3.0)
 
-    assert result["laps_completed"] >= 3.0, (
-        f"only {result['laps_completed']:.2f} laps completed"
-    )
-    assert result["min_wheels_inside"] == 4
-    assert not result["terminated"]
+    lap_times = []
+    for lap in range(3):
+        result = drive(env, controller, laps=1.0)
+        assert result["lap_completed"], f"lap {lap + 1} did not complete"
+        assert not result["left_track"], f"left the track on lap {lap + 1}"
+        assert result["min_wheels_inside"] == 4
+        lap_times.append(result["lap_time_s"])
+
+    # Deterministic env and controller: the laps must be identical, which is
+    # what proves nothing leaked from the previous episode.
+    assert len(set(lap_times)) == 1, f"lap times drifted across episodes: {lap_times}"

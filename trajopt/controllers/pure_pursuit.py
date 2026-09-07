@@ -228,9 +228,14 @@ def drive(
         max_steps: Hard step budget.
         laps: Number of laps to cover before stopping.
 
+    Note that a completed lap now terminates the episode, so `laps` above 1.0
+    only reaches further if the environment is configured not to end there.
+    To cover several laps, call this once per lap -- it resets on entry.
+
     Returns:
         Dict with `laps_completed`, `distance_m`, `steps`, `lap_time_s`,
-        `terminated`, `truncated`, `min_wheels_inside` and the `xs`/`ys` path.
+        `terminated`, `truncated`, `lap_completed`, `left_track`,
+        `min_wheels_inside` and the `xs`/`ys` path.
     """
     env.reset()
 
@@ -277,6 +282,10 @@ def drive(
         "lap_time_s": steps * env.cfg.dt,
         "terminated": terminated,
         "truncated": truncated,
+        "lap_completed": env.lap_completed,
+        # Terminating on a finished lap is success; terminating otherwise
+        # means the vehicle left the track.
+        "left_track": terminated and not env.lap_completed,
         "min_wheels_inside": min_wheels,
         "mean_speed": float(np.mean(speeds)) if speeds else 0.0,
         "xs": np.array(xs),
