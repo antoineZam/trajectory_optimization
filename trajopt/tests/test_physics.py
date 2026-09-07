@@ -160,11 +160,6 @@ def test_combined_longitudinal_and_lateral_force_respects_friction_circle(
     assert peak_decel / GRAVITY <= total_grip_g * 1.05
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3: Fx_brake is always subtracted, so braking at rest pushes "
-    "the car backwards. Needs -sign(vx) with a deadband.",
-)
 def test_braking_never_reverses_the_vehicle(vehicle_spec: VehicleSpec):
     """Braking must decelerate towards zero, not through it."""
     state = _state(vx=8.0)

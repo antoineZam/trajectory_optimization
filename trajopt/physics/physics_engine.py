@@ -94,6 +94,11 @@ class VehicleSpec:
         )
 
 
+# Below this speed the wheels are treated as stopped, so the brake holds the
+# car rather than reversing it.
+BRAKE_DEADBAND_MPS = 0.1
+
+
 # -------------------------
 # Modèle dynamique (bicycle 2D + aéro + transmission simplifiée)
 # -------------------------
@@ -268,10 +273,27 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     wheel_torque = eng_torque * ratio * spec.driveline_eff
     Fx_driven = wheel_torque / max(wheel_radius,1e-3)
 
-    # Freinage
+    # Freinage. Brakes dissipate energy, so the force always OPPOSES motion --
+    # it was previously subtracted unconditionally, which made braking at low
+    # speed push the car backwards (measured: braking from 60 m/s drove vx to
+    # 0.34 m/s and then through zero into reverse).
     brake_torque = brake * spec.brake_torque_max
-    Fx_brake = brake_torque / max(wheel_radius,1e-3)
-    Fx_long = Fx_driven - Fx_brake - np.sign(s.vx) * drag
+    Fx_brake_capacity = brake_torque / max(wheel_radius, 1e-3)
+
+    # Cap the brake impulse at what brings the car exactly to rest over this
+    # step. Without it a deadband alone cannot help: full brakes give 18.8
+    # m/s^2, so a 50 ms step jumps straight from +0.5 to -0.44 m/s and steps
+    # over any deadband narrow enough to be meaningful.
+    Fx_brake_capacity = min(Fx_brake_capacity, abs(s.vx) * spec.mass / dt)
+
+    if abs(s.vx) > BRAKE_DEADBAND_MPS:
+        Fx_brake = -np.sign(s.vx) * Fx_brake_capacity
+    else:
+        # At a standstill the brake can hold the car against the driveline,
+        # but not accelerate it in either direction.
+        Fx_brake = -np.clip(Fx_driven, -Fx_brake_capacity, Fx_brake_capacity)
+
+    Fx_long = Fx_driven + Fx_brake - np.sign(s.vx) * drag
 
     # CG-to-axle distances from wheelbase and mass split
     lf = spec.wheelbase * (1.0 - spec.mass_split_front)  # CG to front axle
