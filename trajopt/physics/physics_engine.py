@@ -512,27 +512,31 @@ def get_wheel_positions(spec: VehicleSpec, state: VehicleState) -> np.ndarray:
     cx, cy = state.x, state.y
     yaw = state.yaw
 
-    # Half dimensions
-    half_wheelbase = spec.wheelbase / 2.0
+    # The state's (x, y) is the centre of gravity, not the wheelbase midpoint.
+    # Using wheelbase/2 for both axles put every wheel 8 cm out of position on
+    # this vehicle (mass_split_front 0.53 gives lf 1.2455 m, lr 1.4045 m), and
+    # these four points are exactly what decides whether the car is off track.
+    lf = spec.wheelbase * (1.0 - spec.mass_split_front)  # CG to front axle
+    lr = spec.wheelbase * spec.mass_split_front          # CG to rear axle
     half_track = spec.track_width / 2.0
 
     # Calculate wheel positions in vehicle frame, then transform to global frame
     cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
 
     # Front left wheel
-    fl_x = cx + cos_yaw * half_wheelbase - sin_yaw * half_track
-    fl_y = cy + sin_yaw * half_wheelbase + cos_yaw * half_track
+    fl_x = cx + cos_yaw * lf - sin_yaw * half_track
+    fl_y = cy + sin_yaw * lf + cos_yaw * half_track
 
     # Front right wheel
-    fr_x = cx + cos_yaw * half_wheelbase + sin_yaw * half_track
-    fr_y = cy + sin_yaw * half_wheelbase - cos_yaw * half_track
+    fr_x = cx + cos_yaw * lf + sin_yaw * half_track
+    fr_y = cy + sin_yaw * lf - cos_yaw * half_track
 
     # Rear left wheel
-    rl_x = cx - cos_yaw * half_wheelbase - sin_yaw * half_track
-    rl_y = cy - sin_yaw * half_wheelbase + cos_yaw * half_track
+    rl_x = cx - cos_yaw * lr - sin_yaw * half_track
+    rl_y = cy - sin_yaw * lr + cos_yaw * half_track
 
     # Rear right wheel
-    rr_x = cx - cos_yaw * half_wheelbase + sin_yaw * half_track
-    rr_y = cy - sin_yaw * half_wheelbase - cos_yaw * half_track
+    rr_x = cx - cos_yaw * lr + sin_yaw * half_track
+    rr_y = cy - sin_yaw * lr - cos_yaw * half_track
 
     return np.array([[fl_x, fl_y], [fr_x, fr_y], [rl_x, rl_y], [rr_x, rr_y]])
