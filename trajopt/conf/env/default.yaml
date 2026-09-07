@@ -1,0 +1,35 @@
+# Racing environment configuration (maps 1:1 onto envs.rl_environment.RLConfig)
+#
+# Every reward weight and normalization constant lives here so that experiments
+# are Hydra overrides instead of source edits, e.g.:
+#   python main.py env.progress_reward_scale=0.5 env.max_steps=800
+
+# --- Simulation ---------------------------------------------------------------
+dt: 0.05          # Timestep in seconds
+max_steps: 8000   # Maximum steps per episode
+
+# --- Observation normalization constants --------------------------------------
+max_speed: 50.0               # m/s (~180 km/h)
+max_lateral_velocity: 10.0    # m/s
+max_yaw_rate: 3.0             # rad/s
+max_lookahead_distance: 100.0 # meters
+
+# --- Reward shaping targets ---------------------------------------------------
+target_speed: 25.0  # m/s - optimal racing speed
+min_speed: 5.0      # m/s - minimum acceptable speed
+
+# --- Dense reward weights -----------------------------------------------------
+progress_reward_scale: 1.0
+speed_reward_scale: 0.03
+centerline_reward_scale: 0.02
+
+# --- Milestone rewards --------------------------------------------------------
+checkpoint_bonus: 200.0
+lap_completion_bonus: 500.0
+
+# --- Penalties ----------------------------------------------------------------
+off_track_penalty_scale: 0.5
+termination_penalty: -200.0
+
+# --- Checkpoint system --------------------------------------------------------
+num_checkpoints: 4

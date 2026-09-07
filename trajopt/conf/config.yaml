@@ -4,6 +4,7 @@
 defaults:
   - paths: default
   - vehicle: default
+  - env: default
   - training: default
   - _self_
 

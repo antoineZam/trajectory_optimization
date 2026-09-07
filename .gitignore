@@ -14,10 +14,12 @@ build/
 # =============================================================================
 # Virtual environments
 # =============================================================================
+# Anchored to the repo root: an unanchored `env/` also matches
+# trajopt/conf/env/, which silently hid the Hydra env config group.
 .env
 .venv
-env/
-venv/
+/env/
+/venv/
 
 # =============================================================================
 # IDE / OS

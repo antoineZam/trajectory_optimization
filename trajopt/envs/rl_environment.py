@@ -18,7 +18,7 @@ Action Space (3D):
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import gymnasium as gym
 import numpy as np
@@ -73,6 +73,24 @@ class RLConfig:
 
     # Checkpoint system
     num_checkpoints: int = 4
+
+    @classmethod
+    def from_dict(cls, config: dict | None) -> RLConfig:
+        """Build an RLConfig from a plain dict (e.g. the Hydra `env` group).
+
+        Unknown keys are ignored so that the config file can carry documentation
+        entries without breaking instantiation.
+
+        Args:
+            config: Mapping of field name to value, or None for all defaults.
+
+        Returns:
+            RLConfig instance.
+        """
+        if not config:
+            return cls()
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in config.items() if k in known})
 
 
 # =============================================================================
