@@ -338,7 +338,9 @@ class RacingEnv(gym.Env):
 
         # Compute signed lateral offset (positive = right, negative = left)
         to_vehicle = position - closest_point
-        signed_offset = np.cross(tangent, to_vehicle)  # Right-hand rule
+        # 2D cross product (right-hand rule). np.cross on 2-vectors is
+        # deprecated in NumPy 2.0 and is also ~20x slower than the scalar form.
+        signed_offset = tangent[0] * to_vehicle[1] - tangent[1] * to_vehicle[0]
 
         # Normal vector (pointing right from track direction)
         normal = np.array([-tangent[1], tangent[0]])
