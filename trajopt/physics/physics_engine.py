@@ -276,9 +276,20 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # Aéro
     drag, downforce = aero_forces(spec, v, area=CdA_area)
 
-    # Répartition verticale (statique + aéro) — simplifiée
-    Fz_front = (spec.mass * 9.81 * spec.mass_split_front) + downforce * 0.5
-    Fz_rear = (spec.mass * 9.81 * (1.0 - spec.mass_split_front)) + downforce * 0.5
+    # Répartition verticale (statique + aéro).
+    # Downforce follows the aero balance, not a 50/50 split: the spec carries
+    # Cz_front -1.2 and Cz_rear -1.8, i.e. a 40/60 rear-biased balance that
+    # was being ignored. At 60 m/s the downforce is 93% of the car's weight,
+    # so splitting it evenly moved ~2 kN of grip to the wrong axle and made
+    # the car understeer less at speed than the spec describes.
+    aero_front_share = abs(spec.Cz_front) / max(
+        abs(spec.Cz_front) + abs(spec.Cz_rear), 1e-9
+    )
+    Fz_front = (spec.mass * 9.81 * spec.mass_split_front) + downforce * aero_front_share
+    Fz_rear = (
+        spec.mass * 9.81 * (1.0 - spec.mass_split_front)
+        + downforce * (1.0 - aero_front_share)
+    )
 
     # Capacité de friction
     mu_f = tire_mu(spec, Fz_front)
