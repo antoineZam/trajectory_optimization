@@ -35,6 +35,9 @@ termination_penalty: -10.0
 # --- Checkpoint system --------------------------------------------------------
 num_checkpoints: 4
 
+# --- Termination --------------------------------------------------------------
+wheels_required_inside: 2   # Below this many wheels on track, the episode ends
+
 # --- Initial-state randomization ----------------------------------------------
 # reset() used to always place the vehicle at centerline[0] at 5 m/s with no
 # noise, so parallel workers produced identical rollouts and the value function

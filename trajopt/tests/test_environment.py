@@ -73,7 +73,7 @@ def test_same_seed_gives_identical_rollouts(track, vehicle_spec):
     def rollout(seed: int) -> np.ndarray:
         e = RacingEnv(
             track=track, veh_spec=vehicle_spec, cfg=RLConfig(max_steps=500),
-            enable_telemetry=False, enable_curriculum=False,
+            enable_telemetry=False,
         )
         e.reset(seed=seed)
         e.action_space.seed(seed)
@@ -186,7 +186,7 @@ def test_reset_randomizes_the_initial_state(track, vehicle_spec):
     """
     env = RacingEnv(
         track=track, veh_spec=vehicle_spec, cfg=RLConfig(max_steps=100),
-        enable_telemetry=False, enable_curriculum=False,
+        enable_telemetry=False,
     )
 
     starts = []
@@ -220,7 +220,7 @@ def test_randomization_can_be_switched_off(track, vehicle_spec):
     env = RacingEnv(
         track=track, veh_spec=vehicle_spec,
         cfg=RLConfig(randomize_reset=False),
-        enable_telemetry=False, enable_curriculum=False,
+        enable_telemetry=False,
     )
 
     def start_state(seed: int) -> tuple:
@@ -233,3 +233,27 @@ def test_randomization_can_be_switched_off(track, vehicle_spec):
     np.testing.assert_allclose(
         [env.state.x, env.state.y], track.interpolated_centerline[0], atol=1e-9
     )
+
+
+def test_training_and_evaluation_see_the_same_track(track, vehicle_spec):
+    """No environment may present a different track from the real one.
+
+    This was the fifth blocking defect: training spent its entire budget on a
+    curriculum stage that multiplied the track width by 5 (12 m -> 60 m) and
+    never terminated, while the export evaluated on the real 12 m track with
+    strict termination. The trained policy had never seen the task it was
+    scored on, and the exported "racing line" was an 18-step off-track
+    excursion. Removing the curriculum is what closes it.
+    """
+    env = RacingEnv(track=track, veh_spec=vehicle_spec, enable_telemetry=False)
+
+    assert env.track is track, "the env substituted a different track object"
+    assert env.track.width == track.width
+
+    # Termination must be the real rule, not a relaxed training variant.
+    assert env.cfg.wheels_required_inside == 2
+    env.reset(seed=0)
+    terminated, _ = env._check_termination(
+        env._compute_track_state(np.array([1e5, 1e5]))
+    )
+    assert terminated, "a vehicle far off track must terminate the episode"

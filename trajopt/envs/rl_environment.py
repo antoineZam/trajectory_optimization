@@ -87,6 +87,9 @@ class RLConfig:
     # Checkpoint system
     num_checkpoints: int = 4
 
+    # Wheels that must stay inside the track; below this the episode ends.
+    wheels_required_inside: int = 2
+
     # Initial-state randomization. Off gives a deterministic start on the
     # centerline at the start line, which is what the export needs for a
     # comparable lap; on spreads episodes over the whole track.
@@ -149,7 +152,6 @@ class RacingEnv(gym.Env):
         veh_spec: VehicleSpec,
         cfg: RLConfig | None = None,
         enable_telemetry: bool = True,
-        enable_curriculum: bool = True,
     ):
         """
         Initialize the racing environment.
@@ -159,17 +161,13 @@ class RacingEnv(gym.Env):
             veh_spec: Vehicle specification with physical parameters.
             cfg: Environment configuration.
             enable_telemetry: Whether to collect detailed telemetry data.
-            enable_curriculum: Whether to use curriculum learning.
         """
         super().__init__()
 
-        self.base_track = track
         self.track = track
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
 
-        # Initialize optional systems
-        self._curriculum_enabled = enable_curriculum
         self.telemetry = RacingTelemetry() if enable_telemetry else None
 
         # Define observation space with proper bounds
@@ -219,13 +217,6 @@ class RacingEnv(gym.Env):
             "total_episodes": 0,
         }
 
-        # Curriculum settings (managed externally via CurriculumCallback)
-        self._curriculum_termination_mode = "normal"
-        self._curriculum_wheels_required = 2
-        self._curriculum_checkpoint_multiplier = 1.0
-        self._curriculum_progress_bonus = 0.0
-        self._curriculum_stage_name = "standard"
-        self._off_track_count = 0
 
     def _create_observation_space(self) -> spaces.Box:
         """
@@ -290,36 +281,6 @@ class RacingEnv(gym.Env):
         ], dtype=np.float32)
 
         return spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
-
-    def update_curriculum_params(self, params: dict) -> None:
-        """Update curriculum parameters (called by CurriculumCallback from the main process)."""
-        if "width_multiplier" in params:
-            self._create_curriculum_track(params["width_multiplier"])
-        if "max_steps" in params:
-            self.cfg.max_steps = params["max_steps"]
-        if "termination_mode" in params:
-            self._curriculum_termination_mode = params["termination_mode"]
-        if "wheels_required" in params:
-            self._curriculum_wheels_required = params["wheels_required"]
-        if "checkpoint_multiplier" in params:
-            self._curriculum_checkpoint_multiplier = params["checkpoint_multiplier"]
-        if "progress_bonus" in params:
-            self._curriculum_progress_bonus = params["progress_bonus"]
-        if "stage_name" in params:
-            self._curriculum_stage_name = params["stage_name"]
-
-    def _create_curriculum_track(self, width_multiplier: float) -> None:
-        """Create a modified track with adjusted width for curriculum learning."""
-        if width_multiplier == 1.0:
-            self.track = self.base_track
-            return
-
-        self.track = Track(
-            name=f"{self.base_track.name}_curriculum_{width_multiplier:.1f}x",
-            centerline=self.base_track.centerline.copy(),
-            width=self.base_track.width * width_multiplier,
-            interpolation_resolution=self.base_track.interpolation_resolution,
-        )
 
     # =========================================================================
     # Track State Computation
@@ -650,7 +611,6 @@ class RacingEnv(gym.Env):
         self.lap_completed = False
         self.checkpoints_hit = set()
         self.current_checkpoint = 0
-        self._off_track_count = 0
 
         # Reset control history
         self.prev_throttle = 0.0
@@ -783,7 +743,7 @@ class RacingEnv(gym.Env):
         Raw progress is in [0, 1), so int() capped the id at num_checkpoints-1
         and checkpoint 4 was unreachable. That made lap_completed permanently
         false, and with it the lap bonus, the lap termination and every
-        curriculum graduation criterion -- all dead code. Worse, once progress
+        stage-graduation criterion -- all dead code. Worse, once progress
         wrapped back towards 0 the id dropped while current_checkpoint stayed
         at 3, so no further checkpoint was ever awarded on later laps either.
         """
@@ -890,7 +850,7 @@ class RacingEnv(gym.Env):
         # 4. CHECKPOINT MILESTONE BONUS
         # =====================================================================
         if checkpoint_hit:
-            checkpoint_reward = self.cfg.checkpoint_bonus * self._curriculum_checkpoint_multiplier
+            checkpoint_reward = self.cfg.checkpoint_bonus
             reward += checkpoint_reward
             # Only the telemetry-enabled worker prints. With laps now
             # completable this fires several times per lap; from every worker
@@ -917,12 +877,6 @@ class RacingEnv(gym.Env):
                 )
                 print(f"LAP COMPLETED! Steps: {self.step_count}, Avg Speed: {avg_speed:.1f} m/s")
 
-        # =====================================================================
-        # 6. CURRICULUM PROGRESS BONUS (Extra encouragement in early stages)
-        # =====================================================================
-        if self._curriculum_enabled and on_track and self._curriculum_progress_bonus > 0:
-            reward += self._curriculum_progress_bonus
-
         return reward
 
     def _check_termination(self, track_state: dict) -> tuple[bool, bool]:
@@ -941,14 +895,8 @@ class RacingEnv(gym.Env):
         # Count wheels inside track
         wheels_inside = self._count_wheels_inside_track()
 
-        # Update off-track counter
-        if wheels_inside == 0:
-            self._off_track_count += 1
-        else:
-            self._off_track_count = 0
-
-        # Check curriculum-aware termination
-        if self._should_terminate_curriculum(wheels_inside):
+        # Leaving the track ends the episode
+        if wheels_inside < self.cfg.wheels_required_inside:
             terminated = True
             self.termination_stats["wheel_violations"] += 1
 
@@ -970,21 +918,6 @@ class RacingEnv(gym.Env):
             self.termination_stats["max_steps"] += 1
 
         return terminated, truncated
-
-    def _should_terminate_curriculum(self, wheels_inside: int) -> bool:
-        """Check termination based on curriculum rules."""
-        if not self._curriculum_enabled:
-            return wheels_inside < 2
-
-        mode = self._curriculum_termination_mode
-        required = self._curriculum_wheels_required
-
-        if mode == "never":
-            return False
-        elif mode == "soft":
-            return wheels_inside == 0 and self._off_track_count > 20
-        else:  # "normal" or "strict"
-            return wheels_inside < required
 
     def _count_wheels_inside_track(self) -> int:
         """Count how many wheels are inside the track boundaries."""
@@ -1062,7 +995,7 @@ class RacingEnv(gym.Env):
         else:
             reason = "wheel_violation"
 
-        self.telemetry.end_episode(self.lap_completed, reason, self._curriculum_stage_name)
+        self.telemetry.end_episode(self.lap_completed, reason, "standard")
 
         if self.termination_stats["total_episodes"] % 100 == 0:
             self.telemetry.print_training_progress(self.termination_stats["total_episodes"])

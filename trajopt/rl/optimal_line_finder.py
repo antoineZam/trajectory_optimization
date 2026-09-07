@@ -27,57 +27,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNorm
 
 from envs.rl_environment import RacingEnv, RLConfig
 from physics.physics_engine import VehicleSpec, get_gear_speed_info
-from utils.curriculum import CurriculumLearning
 from utils.track import load_track_json
 
 # Default number of parallel environments
 DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
-
-
-class CurriculumCallback(BaseCallback):
-    """Centralized curriculum that pushes stage params to all vectorized envs."""
-
-    def __init__(self, verbose: int = 0):
-        super().__init__(verbose)
-        self.curriculum = CurriculumLearning()
-        self.total_episodes = 0
-
-    def _on_training_start(self) -> None:
-        self._push_curriculum_params()
-
-    def _on_step(self) -> bool:
-        infos = self.locals["infos"]
-        dones = self.locals["dones"]
-
-        any_graduated = False
-        for done, info in zip(dones, infos):
-            if done and "checkpoints_hit" in info:
-                self.total_episodes += 1
-                graduated = self.curriculum.record_episode_result(
-                    checkpoints_hit=info["checkpoints_hit"],
-                    lap_completed=info["lap_completed"],
-                    episode_num=self.total_episodes,
-                )
-                if graduated:
-                    any_graduated = True
-
-        if any_graduated:
-            self._push_curriculum_params()
-
-        return True
-
-    def _push_curriculum_params(self) -> None:
-        stage = self.curriculum.get_current_stage()
-        params = {
-            "width_multiplier": stage.track_width_multiplier,
-            "max_steps": stage.max_episode_steps,
-            "termination_mode": stage.termination_mode,
-            "wheels_required": stage.wheels_required_inside,
-            "checkpoint_multiplier": stage.checkpoint_reward_multiplier,
-            "progress_bonus": stage.progress_bonus,
-            "stage_name": stage.name,
-        }
-        self.training_env.env_method("update_curriculum_params", params)
 
 
 @dataclass
@@ -171,7 +124,6 @@ def make_env_factory(
     vehicle_cfg: dict,
     interpolation_resolution: int = 2000,
     enable_telemetry: bool = False,
-    enable_curriculum: bool = True,
     env_cfg: dict | None = None,
     seed: int | None = None,
 ) -> Callable[[], Monitor]:
@@ -184,7 +136,6 @@ def make_env_factory(
         vehicle_cfg: Vehicle configuration dictionary.
         interpolation_resolution: Track interpolation resolution.
         enable_telemetry: Whether to enable telemetry (only for rank 0).
-        enable_curriculum: Whether to enable curriculum learning.
         env_cfg: RLConfig overrides (the Hydra `env` group). None uses defaults.
         seed: Per-env seed. Seeds the first reset and the action space so runs
             are reproducible; None leaves seeding to the caller.
@@ -200,7 +151,6 @@ def make_env_factory(
             veh_spec=spec,
             cfg=RLConfig.from_dict(env_cfg),
             enable_telemetry=enable_telemetry,
-            enable_curriculum=enable_curriculum,
         )
         if seed is not None:
             env.reset(seed=seed)
@@ -248,7 +198,6 @@ def create_vec_env(
             vehicle_cfg=vehicle_cfg,
             interpolation_resolution=interpolation_resolution,
             enable_telemetry=(i == 0),  # Only first env has telemetry
-            enable_curriculum=True,
             env_cfg=env_cfg,
             seed=training_cfg.seed + i,
         )
@@ -416,8 +365,7 @@ def train_and_export(
     model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
     os.makedirs(model_dir, exist_ok=True)
 
-    curriculum_cb = CurriculumCallback(verbose=cfg.verbose)
-    callbacks: list[BaseCallback] = [curriculum_cb]
+    callbacks: list[BaseCallback] = []
     if cfg.save_freq > 0:
         # save_freq counts calls per env, so divide to get global timesteps
         callbacks.append(
@@ -432,19 +380,11 @@ def train_and_export(
 
     model.learn(
         total_timesteps=cfg.timesteps,
-        callback=CallbackList(callbacks),
+        callback=CallbackList(callbacks) if callbacks else None,
         log_interval=cfg.log_interval,
     )
 
     print("\nTRAINING COMPLETED")
-
-    # Which curriculum stage the budget actually reached, for the train/eval
-    # mismatch check further down.
-    curriculum_stage_at_end = curriculum_cb.curriculum.get_current_stage()
-    print(
-        f"Final curriculum stage: {curriculum_stage_at_end.name} "
-        f"({curriculum_stage_at_end.track_width_multiplier:.1f}x track width)"
-    )
 
     # Save model and normalization stats
     model.save(os.path.join(model_dir, "ppo_racing"))
@@ -460,7 +400,6 @@ def train_and_export(
             vehicle_cfg=veh_cfg,
             interpolation_resolution=interpolation_resolution,
             enable_telemetry=True,
-            enable_curriculum=False,
             # Deterministic start on the line: the exported trajectory has to
             # be a comparable lap, not one begun from a random point.
             env_cfg={**(env_cfg or {}), "randomize_reset": False},
@@ -481,22 +420,6 @@ def train_and_export(
     else:
         eval_env = raw_eval_env
 
-    # Make the train/eval mismatch loud instead of silent. The eval env runs
-    # with enable_curriculum=False, i.e. the real track width and strict
-    # termination, while training may have spent the whole budget on a stage
-    # that widens the track by up to 5x and never terminates. A policy trained
-    # there has no reason to work here, and the resulting 18-step off-track
-    # excursion is easy to mistake for a bad policy rather than a mismatch.
-    training_stage = curriculum_stage_at_end
-    if training_stage is not None and training_stage.track_width_multiplier != 1.0:
-        print(
-            f"\nWARNING: training ended on curriculum stage "
-            f"'{training_stage.name}' at {training_stage.track_width_multiplier:.1f}x "
-            f"track width ({track.width * training_stage.track_width_multiplier:.0f} m), "
-            f"but evaluation runs on the real {track.width:.0f} m track with strict "
-            f"termination. Expect the export to fail: the policy has never seen "
-            f"this task."
-        )
 
     # Close training environment (after copying stats)
     env.close()
@@ -643,15 +566,6 @@ def _print_training_info(cfg: TrainingConfig, track, spec, use_subproc: bool) ->
     print("  Track Position (5D): lateral offset, heading error, progress, boundaries")
     print("  Lookahead (8D): 4 points ahead (distance, angle)")
     print("  Control Context (3D): prev throttle, brake, steer")
-
-    # Curriculum
-    print("\nCURRICULUM LEARNING:")
-    print("  Stage 1: Driving School (5x track, never terminate)")
-    print("  Stage 2: Learner's Permit (3.5x track, soft termination)")
-    print("  Stage 3: Provisional License (2.5x track)")
-    print("  Stage 4: Full License (1.8x track)")
-    print("  Stage 5: Racing Pro (1.2x track)")
-    print("  Stage 6: Champion (1x track, strict)")
 
     # Vectorization
     print("\nVECTORIZED TRAINING:")

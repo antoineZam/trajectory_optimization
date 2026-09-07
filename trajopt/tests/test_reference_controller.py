@@ -150,7 +150,6 @@ def test_reference_controller_recovers_from_random_starts(track, vehicle_spec):
         veh_spec=vehicle_spec,
         cfg=RLConfig(max_steps=3_000),
         enable_telemetry=False,
-        enable_curriculum=False,
     )
     controller = PurePursuitController(track, vehicle_spec)
 

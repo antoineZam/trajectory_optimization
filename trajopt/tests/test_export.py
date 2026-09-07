@@ -27,7 +27,6 @@ def _vec_env():
             track_path=str(TRACK_PATH),
             vehicle_cfg=vehicle_cfg,
             enable_telemetry=False,
-            enable_curriculum=False,
             seed=0,
         )
     ])

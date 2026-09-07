@@ -35,10 +35,9 @@ def track() -> Track:
 
 @pytest.fixture
 def env(track: Track, vehicle_spec: VehicleSpec) -> RacingEnv:
-    """A curriculum-free environment on the real track.
+    """An environment on the real track.
 
-    Curriculum off and telemetry off: tests must exercise the task the export
-    step actually evaluates on, not a widened training variant.
+    Telemetry off so tests do not write telemetry files.
 
     max_steps is 3000 rather than the 1500 default so a slow lap still fits,
     but small enough that a controller which fails to lap fails fast.
@@ -50,5 +49,4 @@ def env(track: Track, vehicle_spec: VehicleSpec) -> RacingEnv:
         veh_spec=vehicle_spec,
         cfg=RLConfig(max_steps=3_000, randomize_reset=False),
         enable_telemetry=False,
-        enable_curriculum=False,
     )

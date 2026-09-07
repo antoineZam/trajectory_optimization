@@ -154,7 +154,7 @@ class Track:
         differences at the array ends, which puts a wrong normal on the two
         samples at the start/finish seam; the resulting misplaced offset points
         made the boundary self-intersect there (visible as an invalid track
-        polygon once the curriculum widened the track past ~3.5x).
+        polygon for any track wider than ~3.5x this one).
         """
         # Periodic central differences: tangent[i] = (p[i+1] - p[i-1]) / 2
         tangents = (np.roll(line, -1, axis=0) - np.roll(line, 1, axis=0)) / 2.0
