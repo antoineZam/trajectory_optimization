@@ -28,6 +28,9 @@ class Track:
     _right_boundary_kdtree: cKDTree = None
     # Polygon for accurate inside/outside checks
     _track_polygon: Polygon = None
+    # Arc-length metadata (meters), derived from the interpolated centerline
+    _lap_length: float = None
+    _arc_step: float = None
 
     def __post_init__(self):
         # Allow lazy computation of interpolated track
@@ -51,6 +54,37 @@ class Track:
         if self._interpolated_centerline is None:
             self._compute_interpolated_track()
         return self._interpolated_centerline
+
+    @property
+    def lap_length(self) -> float:
+        """Total arc length of one lap along the interpolated centerline, in meters."""
+        if self._lap_length is None:
+            self._compute_interpolated_track()
+        return self._lap_length
+
+    @property
+    def arc_step(self) -> float:
+        """Arc length between two consecutive interpolated centerline points, in meters.
+
+        This is the conversion factor between a *distance* in meters and an *index
+        offset* into `interpolated_centerline`. Note that `interpolation_resolution`
+        is a point count, not a spatial resolution -- dividing a distance by it is a
+        bug (see `arc_step` usages).
+        """
+        if self._arc_step is None:
+            self._compute_interpolated_track()
+        return self._arc_step
+
+    def index_offset_for_distance(self, distance: float) -> int:
+        """Convert a distance ahead in meters to an index offset on the centerline.
+
+        Args:
+            distance: Distance along the track in meters.
+
+        Returns:
+            Number of centerline indices corresponding to that distance.
+        """
+        return int(round(distance / self.arc_step))
 
     def _compute_interpolated_track(self):
         """Compute smooth interpolated centerline and boundaries using splines."""
@@ -83,24 +117,47 @@ class Track:
             self._interpolated_left = offset_polyline(self.centerline, +self.width/2)
             self._interpolated_right = offset_polyline(self.centerline, -self.width/2)
 
+        # Arc length of the closed centerline (includes the wrap-around segment)
+        segments = np.diff(
+            np.vstack([self._interpolated_centerline, self._interpolated_centerline[0]]),
+            axis=0,
+        )
+        self._lap_length = float(np.sum(np.linalg.norm(segments, axis=1)))
+        self._arc_step = self._lap_length / len(self._interpolated_centerline)
+
         # Build K-D trees for fast lookups
         self._centerline_kdtree = cKDTree(self._interpolated_centerline)
         self._left_boundary_kdtree = cKDTree(self._interpolated_left)
         self._right_boundary_kdtree = cKDTree(self._interpolated_right)
 
-        # Create a Shapely Polygon for the track for accurate inside/outside checks
-        # The polygon is created from the exterior (left) and interior (right) boundaries
-        self._track_polygon = Polygon(
-            np.vstack([
-                self._interpolated_left,
-                self._interpolated_right[::-1],
-            ])
-        )
+        # Create a Shapely Polygon for the track for accurate inside/outside checks.
+        #
+        # The track is an ANNULUS: one boundary is the outer ring, the other the
+        # inner hole. Concatenating them into a single ring instead closes the
+        # shape with a chord across the start/finish line, so points near the
+        # seam -- including the centerline itself -- read as outside the track.
+        # Which offset ends up outside depends on the centerline's traversal
+        # direction, so pick by enclosed area rather than assuming.
+        ring_a = Polygon(self._interpolated_left)
+        ring_b = Polygon(self._interpolated_right)
+        if ring_a.area >= ring_b.area:
+            outer, inner = self._interpolated_left, self._interpolated_right
+        else:
+            outer, inner = self._interpolated_right, self._interpolated_left
+        self._track_polygon = Polygon(shell=outer, holes=[inner])
 
     def _offset_interpolated_line(self, line: np.ndarray, offset: float) -> np.ndarray:
-        """Create offset boundary from interpolated centerline."""
-        # Compute tangent vectors
-        tangents = np.gradient(line, axis=0)
+        """Create offset boundary from interpolated centerline.
+
+        The centerline is a closed curve, so tangents are computed with
+        *periodic* central differences. `np.gradient` falls back to one-sided
+        differences at the array ends, which puts a wrong normal on the two
+        samples at the start/finish seam; the resulting misplaced offset points
+        made the boundary self-intersect there (visible as an invalid track
+        polygon once the curriculum widened the track past ~3.5x).
+        """
+        # Periodic central differences: tangent[i] = (p[i+1] - p[i-1]) / 2
+        tangents = (np.roll(line, -1, axis=0) - np.roll(line, 1, axis=0)) / 2.0
         # Normalize tangents
         tangent_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
         tangent_norms = np.where(tangent_norms > 1e-8, tangent_norms, 1.0)
