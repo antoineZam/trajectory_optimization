@@ -144,12 +144,6 @@ def test_a_full_lap_awards_all_checkpoints_and_completes(env: RacingEnv):
     assert env.lap_completed
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B3: the progress reward is clipped to positive values, so an "
-    "out-and-back nets a positive return for zero net displacement. The reward "
-    "field is non-conservative and oscillating in place is an exploit.",
-)
 def test_progress_reward_is_conservative(env: RacingEnv):
     """Moving forward then back must net zero progress reward.
 
@@ -161,14 +155,9 @@ def test_progress_reward_is_conservative(env: RacingEnv):
 
     # Baseline: same progress twice, so the progress delta is zero and only the
     # speed/centring terms contribute.
-    env.last_track_progress = start
-    baseline = env._compute_reward(_synthetic_track_state(env, start), False)
-
-    env.last_track_progress = start
-    forward = env._compute_reward(_synthetic_track_state(env, end), False)
-
-    env.last_track_progress = end
-    backward = env._compute_reward(_synthetic_track_state(env, start), False)
+    baseline = env._compute_reward(_synthetic_track_state(env, start), False, 0.0)
+    forward = env._compute_reward(_synthetic_track_state(env, end), False, end - start)
+    backward = env._compute_reward(_synthetic_track_state(env, start), False, start - end)
 
     net = (forward - baseline) + (backward - baseline)
     assert net == pytest.approx(0.0, abs=1e-6), (

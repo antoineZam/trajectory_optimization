@@ -764,12 +764,16 @@ class RacingEnv(gym.Env):
         # 1. PROGRESS REWARD (Primary learning signal)
         # =====================================================================
         # progress_delta is the unwrapped, signed step computed once per step
-        # by _advance_progress.
-        progress_reward = progress_delta * 1500.0 * self.cfg.progress_reward_scale
-
-        # Only reward forward progress, don't penalize backwards (let termination handle that)
-        if progress_reward > 0:
-            reward += progress_reward
+        # by _advance_progress. It is added SIGNED and unclipped: going
+        # backwards must cost exactly what going forwards pays.
+        #
+        # Clipping the negative half made the reward field non-conservative,
+        # so a round trip was paid for the outbound leg and not charged for
+        # the return. Oscillating in place earned ~300 points for zero net
+        # displacement -- 20% of a full lap's progress reward -- and that is
+        # the exploit the agent actually found: 3002 points per episode with
+        # zero checkpoints reached.
+        reward += progress_delta * 1500.0 * self.cfg.progress_reward_scale
 
         # Also track distance for telemetry
         if self._prev_position is not None:
