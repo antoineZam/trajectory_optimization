@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Système avancé de prédiction et d'optimisation de trajectoire"
 authors = ["Antoine Zamord"]
 readme = "README.md"
-packages = [{include = "envs"}, {include = "models"}, {include = "physics"}, {include = "rl"}, {include = "utils"}]
+packages = [{include = "controllers"}, {include = "envs"}, {include = "models"},
+            {include = "physics"}, {include = "rl"}, {include = "utils"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -71,3 +72,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+# Package imports are top-level (`from utils.track import ...`), so the
+# project root must be importable during collection.
+pythonpath = ["."]
+# A strict xfail that starts passing is reported as a failure, so the Phase 1
+# fixes cannot land without the corresponding marker being removed.
+xfail_strict = true
