@@ -31,7 +31,7 @@
     "type_suspension": "Double triangulation",
     "raideur_suspension": { "front": 35000, "rear": 32000 },
     "geometrie_pneus": { "carrossage": -2.0, "pincement": 0.1 },
-    "modele_pneu_adherence": { "mu0": 1.6, "alpha": 0.0008 }
+    "modele_pneu_adherence": { "mu0": 1.6, "alpha": -0.08 }
   },
   "brakes": {
     "couple_freinage_max": 9000,

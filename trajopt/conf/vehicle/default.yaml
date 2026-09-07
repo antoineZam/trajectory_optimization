@@ -42,7 +42,7 @@ suspension_tires:
     pincement: 0.1
   modele_pneu_adherence:
     mu0: 1.6
-    alpha: 0.0008
+    alpha: -0.08   # Negative: tires lose grip as load rises (~8% per doubling)
 
 brakes:
   couple_freinage_max: 9000

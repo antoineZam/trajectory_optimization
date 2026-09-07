@@ -160,7 +160,29 @@ def aero_forces(
     return drag, downforce
 
 
-def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float = 4000.0) -> float:
+def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float | None = None) -> float:
+    """Friction coefficient at a given vertical load.
+
+    Real tires lose grip as load increases, so alpha_muFz must be NEGATIVE.
+    It was +0.0008 against a hardcoded 4000 N reference, which at a realistic
+    7539 N axle load changed mu by +0.07% -- the parameter was a no-op with
+    the wrong sign.
+
+    The reference load now defaults to the static per-axle load, so mu0 is the
+    grip at nominal load and load sensitivity only appears as the load
+    actually deviates from it (aerodynamic downforce, and weight transfer once
+    that is modelled).
+
+    Args:
+        spec: Vehicle specification.
+        Fz: Vertical load on the axle (N).
+        Fz_ref: Reference load; defaults to the static per-axle load.
+
+    Returns:
+        Friction coefficient at that load.
+    """
+    if Fz_ref is None:
+        Fz_ref = spec.mass * 9.81 / 2.0
     return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
 
 
