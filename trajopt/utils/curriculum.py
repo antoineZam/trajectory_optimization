@@ -43,7 +43,13 @@ class CurriculumStage:
 
     # Reward modifications
     checkpoint_reward_multiplier: float
-    progress_bonus: float  # Additional per-step bonus
+    # Additional per-step bonus paid while on track. Note this is a
+    # SURVIVAL bonus despite the name -- it is not tied to progress at
+    # all. It must stay small next to the dense progress reward
+    # (~0.11/step); at 0.1 it paid 150 over a 1500-step episode, more
+    # than an entire completed lap is worth, so standing still on the
+    # 5.0x-wide stage-0 track outscored driving a lap.
+    progress_bonus: float
 
 
 class CurriculumLearning:
@@ -73,7 +79,7 @@ class CurriculumLearning:
                 name="driving_school",
                 description="Learn to drive forward and hit first checkpoint",
                 track_width_multiplier=5.0,  # Very wide - almost impossible to fail
-                max_episode_steps=2000,
+                max_episode_steps=1500,
                 checkpoint_threshold=1,  # Just need to hit first checkpoint (25% of lap)
                 termination_mode="never",  # Never terminate for going off track
                 wheels_required_inside=0,
@@ -82,7 +88,7 @@ class CurriculumLearning:
                 success_rate_threshold=0.15,  # 15% hitting checkpoint 1
                 early_graduation_rate=0.40,  # Graduate early if 40%+ succeed
                 checkpoint_reward_multiplier=2.0,  # Double checkpoint rewards
-                progress_bonus=0.1,  # Extra encouragement
+                progress_bonus=0.02,  # Extra encouragement
             ),
 
             # Stage 1: "Learner's Permit" - Learn to stay on track
@@ -90,7 +96,7 @@ class CurriculumLearning:
                 name="learners_permit",
                 description="Learn to stay on track and reach checkpoint 2",
                 track_width_multiplier=3.5,  # Still quite wide
-                max_episode_steps=3000,
+                max_episode_steps=1500,
                 checkpoint_threshold=2,  # Need 2 checkpoints (50% of lap)
                 termination_mode="soft",  # Only terminate if completely off for 20+ steps
                 wheels_required_inside=0,
@@ -99,7 +105,7 @@ class CurriculumLearning:
                 success_rate_threshold=0.12,  # 12% hitting checkpoint 2
                 early_graduation_rate=0.35,
                 checkpoint_reward_multiplier=1.75,
-                progress_bonus=0.05,
+                progress_bonus=0.01,
             ),
 
             # Stage 2: "Provisional License" - Learn boundaries
@@ -107,7 +113,7 @@ class CurriculumLearning:
                 name="provisional_license",
                 description="Learn track boundaries and reach checkpoint 3",
                 track_width_multiplier=2.5,  # Moderately wide
-                max_episode_steps=4000,
+                max_episode_steps=1500,
                 checkpoint_threshold=3,  # Need 3 checkpoints (75% of lap)
                 termination_mode="soft",
                 wheels_required_inside=1,  # At least 1 wheel inside
@@ -116,7 +122,7 @@ class CurriculumLearning:
                 success_rate_threshold=0.10,  # 10% hitting checkpoint 3
                 early_graduation_rate=0.30,
                 checkpoint_reward_multiplier=1.5,
-                progress_bonus=0.03,
+                progress_bonus=0.005,
             ),
 
             # Stage 3: "Full License" - Complete laps with some tolerance
@@ -124,7 +130,7 @@ class CurriculumLearning:
                 name="full_license",
                 description="Complete full laps with reasonable boundaries",
                 track_width_multiplier=1.8,  # Slightly wider than normal
-                max_episode_steps=6000,
+                max_episode_steps=1500,
                 checkpoint_threshold=4,  # Full lap required
                 termination_mode="normal",
                 wheels_required_inside=2,  # Standard 2-wheel rule
@@ -133,7 +139,7 @@ class CurriculumLearning:
                 success_rate_threshold=0.08,  # 8% completing laps
                 early_graduation_rate=0.25,
                 checkpoint_reward_multiplier=1.25,
-                progress_bonus=0.01,
+                progress_bonus=0.002,
             ),
 
             # Stage 4: "Racing Pro" - Standard racing conditions
@@ -141,7 +147,7 @@ class CurriculumLearning:
                 name="racing_pro",
                 description="Race on standard track with normal rules",
                 track_width_multiplier=1.2,  # Near-normal width
-                max_episode_steps=8000,
+                max_episode_steps=1500,
                 checkpoint_threshold=4,
                 termination_mode="normal",
                 wheels_required_inside=2,
@@ -158,7 +164,7 @@ class CurriculumLearning:
                 name="champion",
                 description="Master the track at full difficulty",
                 track_width_multiplier=1.0,  # Normal track width
-                max_episode_steps=10000,
+                max_episode_steps=1500,
                 checkpoint_threshold=4,
                 termination_mode="strict",
                 wheels_required_inside=2,

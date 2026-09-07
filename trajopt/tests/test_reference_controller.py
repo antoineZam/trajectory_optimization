@@ -74,6 +74,45 @@ def test_reference_lap_time_is_physically_plausible(env: RacingEnv):
     assert result["mean_speed"] > 15.0, f"mean speed only {result['mean_speed']:.1f} m/s"
 
 
+def test_reference_lap_return_matches_the_documented_budget(env: RacingEnv):
+    """A completed lap must return an O(100) reward, milestones ~1/3 of it.
+
+    The reward scale drifted from its docstring by 5x historically (documented
+    ~0.65 per step, actually ~3.1), and nothing caught it. This pins the
+    budget so a future reward change has to be deliberate.
+
+    Bounds are loose on purpose: they catch an order-of-magnitude slip, not
+    a small retune.
+    """
+    controller = PurePursuitController(env.track, env.spec)
+    env.reset()
+
+    total = 0.0
+    steps = 0
+    for _ in range(env.cfg.max_steps):
+        _, reward, terminated, truncated, _ = env.step(controller.act(env.state))
+        total += reward
+        steps += 1
+        if terminated or truncated:
+            break
+
+    assert env.lap_completed, "the reference lap did not complete"
+
+    milestones = (
+        env.cfg.num_checkpoints * env.cfg.checkpoint_bonus + env.cfg.lap_completion_bonus
+    )
+    per_step = (total - milestones) / steps
+
+    assert 50.0 < total < 200.0, f"lap return {total:.1f} is outside the O(100) budget"
+    assert 0.2 < milestones / total < 0.5, (
+        f"milestones are {milestones / total:.0%} of the return, expected ~1/3"
+    )
+    # Dense reward must stay O(0.1) per step: this is what keeps the return
+    # standard deviation low enough that the value loss does not swamp the
+    # policy gradient.
+    assert 0.05 < per_step < 0.5, f"dense reward is {per_step:.3f} per step"
+
+
 def test_repeated_lap_episodes_stay_stable(env: RacingEnv):
     """Three consecutive lap episodes, to catch state that leaks across resets.
 

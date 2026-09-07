@@ -26,7 +26,8 @@ network:
 env:
   n_envs: 4
   normalize_obs: true
-  normalize_reward: false
+  normalize_reward: true   # Divides by the running return std; a monotone
+                           # global rescale, so milestone/dense ratios are preserved
   clip_obs: 10.0
   clip_reward: 10.0
 

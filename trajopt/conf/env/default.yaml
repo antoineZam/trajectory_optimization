@@ -6,7 +6,7 @@
 
 # --- Simulation ---------------------------------------------------------------
 dt: 0.05          # Timestep in seconds
-max_steps: 8000   # Maximum steps per episode
+max_steps: 1500   # A reference lap is ~540 steps (27 s); 1500 allows a slow lap
 
 # --- Observation normalization constants --------------------------------------
 max_speed: 50.0               # m/s (~180 km/h)
@@ -19,17 +19,18 @@ target_speed: 25.0  # m/s - optimal racing speed
 min_speed: 5.0      # m/s - minimum acceptable speed
 
 # --- Dense reward weights -----------------------------------------------------
-progress_reward_scale: 1.0
+# Kept in O(1) physical units so VecNormalize's return scale stays sane.
+progress_reward_scale: 0.1   # Reward per METER of forward progress
 speed_reward_scale: 0.03
-centerline_reward_scale: 0.02
+centerline_reward_scale: 0.02  # Edge-proximity penalty scale
 
-# --- Milestone rewards --------------------------------------------------------
-checkpoint_bonus: 200.0
-lap_completion_bonus: 500.0
+# --- Milestone rewards (~37% of a completed lap's return) ---------------------
+checkpoint_bonus: 5.0
+lap_completion_bonus: 15.0
 
 # --- Penalties ----------------------------------------------------------------
-off_track_penalty_scale: 0.5
-termination_penalty: -200.0
+off_track_penalty_scale: 0.2
+termination_penalty: -10.0
 
 # --- Checkpoint system --------------------------------------------------------
 num_checkpoints: 4

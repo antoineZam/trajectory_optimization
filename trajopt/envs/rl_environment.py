@@ -45,7 +45,10 @@ class RLConfig:
 
     # Simulation parameters
     dt: float = 0.05  # Timestep in seconds
-    max_steps: int = 8000  # Maximum steps per episode
+    # A lap of the sample track is ~540 steps (27 s) at the reference pace.
+    # 1500 leaves room for a slow lap without burning a whole rollout on one
+    # episode; the old 8000 assumed a lap took 8000 steps, a 15x error.
+    max_steps: int = 1500  # Maximum steps per episode
 
     # Normalization constants (for observation scaling)
     max_speed: float = 50.0  # m/s (~180 km/h)
@@ -57,19 +60,29 @@ class RLConfig:
     target_speed: float = 25.0  # m/s (~90 km/h) - optimal racing speed
     min_speed: float = 5.0  # m/s - minimum acceptable speed
 
-    # Reward weights (tuned for unnormalized rewards)
-    # Dense rewards: target ~0.1-0.2 per step → ~800-1600 over full lap (8000 steps)
-    progress_reward_scale: float = 1.0  # Multiplier on progress reward
+    # Reward weights, in O(1) units.
+    #
+    # The reward field is kept small and in physical units so that
+    # VecNormalize's running return scale stays sane. Previously the return
+    # standard deviation was 126 (ret_rms.var 15859), which made the critic
+    # fit targets with a squared loss around 15900; at vf_coef 0.5 the value
+    # gradient outweighed the policy gradient by ~1e6, and max_grad_norm 0.5
+    # then spent the entire gradient budget on the critic. The policy's action
+    # std was still 1.09 after 2M steps -- its initialisation.
+    #
+    # Reference lap (607.3 m, ~540 steps): progress 60.7, checkpoints 20,
+    # lap bonus 15 -> ~96 total, with milestones about 37% of the return.
+    progress_reward_scale: float = 0.1  # Reward per METER of forward progress
     speed_reward_scale: float = 0.03  # Reward for maintaining good speed
-    centerline_reward_scale: float = 0.02  # Reward for staying centered
+    centerline_reward_scale: float = 0.02  # Edge-proximity penalty scale
 
-    # Milestone rewards: ~30% of a good episode's total return
-    checkpoint_bonus: float = 200.0  # Per checkpoint (4 × 200 = 800 per lap)
-    lap_completion_bonus: float = 500.0  # For completing a lap
+    # Milestone rewards: ~37% of a completed lap's return
+    checkpoint_bonus: float = 5.0  # Per checkpoint (4 x 5 = 20 per lap)
+    lap_completion_bonus: float = 15.0  # For completing a lap
 
     # Penalties
-    off_track_penalty_scale: float = 0.5  # Per-step penalty when off track
-    termination_penalty: float = -200.0  # One-time penalty on termination
+    off_track_penalty_scale: float = 0.2  # Per-step penalty when off track
+    termination_penalty: float = -10.0  # One-time penalty on termination
 
     # Checkpoint system
     num_checkpoints: int = 4
@@ -748,11 +761,12 @@ class RacingEnv(gym.Env):
         - Small penalties that don't dominate the positive signal
         - Net positive reward during normal on-track driving
 
-        Expected reward magnitudes per step at 25 m/s on centerline:
-        - Progress: ~0.5 (main signal)
-        - Speed: ~0.1 (bonus for good speed)
-        - Centerline: ~0.05 (bonus for being centered)
-        - Total: ~0.65 per step (positive reinforcement)
+        Measured magnitudes per step at ~23 m/s on the centerline:
+        - Progress: ~0.11 (main signal, = meters travelled x 0.1)
+        - Speed:    ~0.015 (bonus for being at or above target speed)
+        - Edge:      0.0 while away from the boundary
+        Over a reference lap (607.3 m, ~540 steps): progress 60.7,
+        checkpoints 20, lap bonus 15, total ~96.
         """
         reward = 0.0
         current_pos = np.array([self.state.x, self.state.y])
@@ -773,7 +787,11 @@ class RacingEnv(gym.Env):
         # displacement -- 20% of a full lap's progress reward -- and that is
         # the exploit the agent actually found: 3002 points per episode with
         # zero checkpoints reached.
-        reward += progress_delta * 1500.0 * self.cfg.progress_reward_scale
+        #
+        # Expressed in meters travelled along the track, so the weight is a
+        # reward-per-meter and does not silently depend on track length or on
+        # max_steps the way the old fixed 1500.0 gain did.
+        reward += progress_delta * self.track.lap_length * self.cfg.progress_reward_scale
 
         # Also track distance for telemetry
         if self._prev_position is not None:

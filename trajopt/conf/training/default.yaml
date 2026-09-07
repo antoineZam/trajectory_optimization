@@ -9,7 +9,9 @@ learning_rate: 0.0003
 n_steps: 2048        # Steps per environment before update
 batch_size: 256      # Minibatch size for updates
 n_epochs: 10         # Epochs per update
-gamma: 0.99          # Discount factor
+gamma: 0.995         # 1/(1-g) = 200 steps = 10 s horizon; a lap is ~540 steps.
+                     # At 0.99 the horizon was 5 s and 0.99^540 = 0.0044, so the
+                     # lap bonus was worth less than one step of progress reward.
 gae_lambda: 0.95     # GAE lambda for advantage estimation
 clip_range: 0.2      # PPO clipping parameter
 ent_coef: 0.01       # Entropy coefficient (encourages exploration)
@@ -26,7 +28,8 @@ network:
 env:
   n_envs: 4            # Number of parallel environments
   normalize_obs: true  # Normalize observations
-  normalize_reward: false  # Disabled: milestones must remain visible to the agent
+  normalize_reward: true   # Divides by the running return std; a monotone
+                           # global rescale, so milestone/dense ratios are preserved
   clip_obs: 10.0       # Observation clipping threshold
   clip_reward: 10.0    # Reward clipping threshold
 

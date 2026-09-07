@@ -9,7 +9,9 @@ learning_rate: 0.0005  # Slightly higher for faster learning
 n_steps: 1024          # Fewer steps for more frequent updates
 batch_size: 128        # Smaller batch for faster updates
 n_epochs: 5            # Fewer epochs per update
-gamma: 0.99
+gamma: 0.995         # 1/(1-g) = 200 steps = 10 s horizon; a lap is ~540 steps.
+                     # At 0.99 the horizon was 5 s and 0.99^540 = 0.0044, so the
+                     # lap bonus was worth less than one step of progress reward.
 gae_lambda: 0.95
 clip_range: 0.2
 ent_coef: 0.02         # Slightly more exploration
@@ -26,7 +28,8 @@ network:
 env:
   n_envs: 8
   normalize_obs: true
-  normalize_reward: false
+  normalize_reward: true   # Divides by the running return std; a monotone
+                           # global rescale, so milestone/dense ratios are preserved
   clip_obs: 10.0
   clip_reward: 10.0
 
