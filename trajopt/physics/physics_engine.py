@@ -98,6 +98,9 @@ class VehicleSpec:
 # car rather than reversing it.
 BRAKE_DEADBAND_MPS = 0.1
 
+# How fast the usable turn radius grows with speed, per m/s.
+STEERING_RADIUS_GAIN = 0.05
+
 
 # -------------------------
 # Modèle dynamique (bicycle 2D + aéro + transmission simplifiée)
@@ -229,29 +232,28 @@ def get_max_steering_angle(spec: VehicleSpec, speed: float) -> float:
     Returns:
         Maximum allowed steering angle (rad)
     """
-    # Base maximum steering angle (physical limit)
-    max_angle = spec.max_steering_angle
+    # Two continuous, monotonically decreasing limits; their minimum is
+    # therefore also continuous and monotonically decreasing.
+    #
+    # This used to branch on `speed > 5.0`, applying the turn-radius limit
+    # only above that point and an extra low_speed_factor below it. The result
+    # was non-monotonic and discontinuous: 27.50 deg at 0 m/s, rising to a
+    # local maximum of 31.25 deg at 5 m/s, then dropping 38% to 19.46 deg at
+    # 10 m/s. reset() starts the vehicle at exactly 5.0 m/s, so the same
+    # steering command produced dynamics differing by 38% either side of the
+    # jump, at the start of every single episode.
+    speed = max(speed, 0.0)
 
-    # Speed-dependent reduction factor
-    # At 0 m/s: full steering, at higher speeds: progressively less
-    speed_reduction = 1.0 / (1.0 + spec.steering_speed_factor * speed)
+    # Steering-system limit: full lock at rest, progressively less with speed
+    system_limit = spec.max_steering_angle / (1.0 + spec.steering_speed_factor * speed)
 
-    # Apply minimum turn radius constraint ONLY at higher speeds
-    # Allow more aggressive steering at low speeds for learning
-    if speed > 5.0:  # Only apply radius constraints above 18 km/h
-        # Using bicycle model: tan(δ) = wheelbase / turn_radius
-        # Speed-adjusted minimum radius (much less aggressive)
-        speed_adjusted_radius = (
-            spec.min_turn_radius * (1.0 + (speed - 5.0) * 0.05)
-        )
-        speed_radius_angle = np.arctan(spec.wheelbase / speed_adjusted_radius)
+    # Turn-radius limit, bicycle model: tan(delta) = wheelbase / radius.
+    # The usable radius grows with speed, so the angle shrinks.
+    radius_limit = np.arctan(
+        spec.wheelbase / (spec.min_turn_radius * (1.0 + STEERING_RADIUS_GAIN * speed))
+    )
 
-        # Take the most restrictive limit
-        return min(max_angle * speed_reduction, speed_radius_angle)
-    else:
-        # At low speeds, allow near-full steering for learning
-        low_speed_factor = max(0.8, speed / 5.0)  # Minimum 80% of max steering
-        return max_angle * speed_reduction * low_speed_factor
+    return float(min(system_limit, radius_limit))
 
 
 def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,

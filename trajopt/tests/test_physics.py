@@ -198,11 +198,6 @@ def test_braking_never_reverses_the_vehicle(vehicle_spec: VehicleSpec):
         assert state.vx >= -0.05, f"braking drove vx to {state.vx:.3f} m/s"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3: the `if speed > 5.0` branch makes the limiter jump 31.25 "
-    "-> 19.46 deg, and reset() starts the vehicle at exactly 5.0 m/s.",
-)
 def test_steering_limiter_is_continuous_and_monotonic(vehicle_spec: VehicleSpec):
     """Max steering must decrease smoothly with speed.
 
