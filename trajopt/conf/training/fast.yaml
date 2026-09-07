@@ -32,6 +32,7 @@ env:
 
 # Less verbose logging
 verbose: 1
-tensorboard_log: null
-log_interval: 5
+seed: 0
+tensorboard_log: ./tb_logs  # Learning curves; view with: tensorboard --logdir tb_logs
+log_interval: 1            # ROLLOUTS between log dumps, not steps. 1 = one curve point per update.
 save_freq: 25000

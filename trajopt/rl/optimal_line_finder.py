@@ -16,10 +16,16 @@ from typing import Any
 import numpy as np
 import torch.nn as nn
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CallbackList,
+    CheckpointCallback,
+)
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
-from envs.rl_environment import RacingEnv
+from envs.rl_environment import RacingEnv, RLConfig
 from physics.physics_engine import VehicleSpec, get_gear_speed_info
 from utils.curriculum import CurriculumLearning
 from utils.track import load_track_json
@@ -107,9 +113,14 @@ class TrainingConfig:
     clip_obs: float = 10.0
     clip_reward: float = 10.0
 
+    # Reproducibility: seeds PPO, the vec env and every env reset.
+    seed: int = 0
+
     # Logging
     verbose: int = 1
     tensorboard_log: str | None = None
+    log_interval: int = 1        # ROLLOUTS between SB3 log dumps (not steps)
+    save_freq: int = 50_000      # Timesteps between intermediate checkpoints (0 = off)
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> TrainingConfig:
@@ -121,7 +132,8 @@ class TrainingConfig:
         direct_fields = [
             "timesteps", "learning_rate", "n_steps", "batch_size", "n_epochs",
             "gamma", "gae_lambda", "clip_range", "ent_coef", "vf_coef",
-            "max_grad_norm", "verbose", "tensorboard_log"
+            "max_grad_norm", "verbose", "tensorboard_log", "log_interval",
+            "save_freq", "seed",
         ]
         for field in direct_fields:
             if field in config:
@@ -160,7 +172,9 @@ def make_env_factory(
     interpolation_resolution: int = 2000,
     enable_telemetry: bool = False,
     enable_curriculum: bool = True,
-) -> Callable[[], RacingEnv]:
+    env_cfg: dict | None = None,
+    seed: int | None = None,
+) -> Callable[[], Monitor]:
     """Create a factory function for environment instantiation.
 
     This factory is picklable and can be used with SubprocVecEnv.
@@ -171,19 +185,32 @@ def make_env_factory(
         interpolation_resolution: Track interpolation resolution.
         enable_telemetry: Whether to enable telemetry (only for rank 0).
         enable_curriculum: Whether to enable curriculum learning.
+        env_cfg: RLConfig overrides (the Hydra `env` group). None uses defaults.
+        seed: Per-env seed. Seeds the first reset and the action space so runs
+            are reproducible; None leaves seeding to the caller.
 
     Returns:
-        A callable that creates a RacingEnv instance.
+        A callable that creates a Monitor-wrapped RacingEnv instance.
     """
-    def _init() -> RacingEnv:
+    def _init() -> Monitor:
         track = load_track_json(track_path, interpolation_resolution=interpolation_resolution)
         spec = VehicleSpec.from_config(vehicle_cfg)
-        return RacingEnv(
+        env = RacingEnv(
             track=track,
             veh_spec=spec,
+            cfg=RLConfig.from_dict(env_cfg),
             enable_telemetry=enable_telemetry,
             enable_curriculum=enable_curriculum,
         )
+        if seed is not None:
+            env.reset(seed=seed)
+            env.action_space.seed(seed)
+
+        # Monitor is what populates info["episode"], which is the only source
+        # SB3 has for rollout/ep_rew_mean and rollout/ep_len_mean -- the two
+        # curves you actually read to tell whether the agent is learning.
+        # Without it the TensorBoard run has train/* scalars only.
+        return Monitor(env)
     return _init
 
 
@@ -193,6 +220,7 @@ def create_vec_env(
     training_cfg: TrainingConfig,
     interpolation_resolution: int = 2000,
     use_subproc: bool = True,
+    env_cfg: dict | None = None,
 ) -> tuple:
     """Create a vectorized environment for parallel training.
 
@@ -203,6 +231,7 @@ def create_vec_env(
         interpolation_resolution: Track interpolation resolution.
         use_subproc: If True, use SubprocVecEnv for true parallelism.
                      If False, use DummyVecEnv (sequential, for debugging).
+        env_cfg: RLConfig overrides (the Hydra `env` group).
 
     Returns:
         Vectorized training environment (optionally wrapped with VecNormalize).
@@ -210,7 +239,9 @@ def create_vec_env(
     n_envs = training_cfg.n_envs
 
     # Create environment factories
-    # Only enable telemetry on the first environment to avoid conflicts
+    # Only enable telemetry on the first environment to avoid conflicts.
+    # Each worker gets a distinct but deterministic seed so rollouts are
+    # reproducible without all workers exploring the identical trajectory.
     env_fns = [
         make_env_factory(
             track_path=track_path,
@@ -218,6 +249,8 @@ def create_vec_env(
             interpolation_resolution=interpolation_resolution,
             enable_telemetry=(i == 0),  # Only first env has telemetry
             enable_curriculum=True,
+            env_cfg=env_cfg,
+            seed=training_cfg.seed + i,
         )
         for i in range(n_envs)
     ]
@@ -247,6 +280,9 @@ def create_vec_env(
             f" reward={training_cfg.normalize_reward}"
         )
 
+    # Seed the vec env itself (action space sampling, per-env reset streams)
+    vec_env.seed(training_cfg.seed)
+
     return vec_env
 
 
@@ -269,6 +305,7 @@ def train_and_export(
     training_cfg: dict[str, Any] | TrainingConfig | None = None,
     interpolation_resolution: int = 2000,
     use_subproc: bool = True,
+    env_cfg: dict | None = None,
     # Legacy parameters for backwards compatibility
     timesteps: int | None = None,
     n_envs: int | None = None,
@@ -282,6 +319,7 @@ def train_and_export(
         training_cfg: Training configuration (dict from Hydra or TrainingConfig).
         interpolation_resolution: Track interpolation resolution.
         use_subproc: Whether to use SubprocVecEnv (True) or DummyVecEnv (False).
+        env_cfg: Environment/reward configuration (the Hydra `env` group).
         timesteps: (Legacy) Override total timesteps.
         n_envs: (Legacy) Override number of environments.
 
@@ -317,6 +355,10 @@ def train_and_export(
     # Print training configuration
     _print_training_info(cfg, track, spec, use_subproc)
 
+    # Seed every global RNG before anything stochastic happens, so that a run is
+    # reproducible from (config, seed) alone.
+    set_random_seed(cfg.seed)
+
     # Create vectorized training environment
     print("\nInitializing vectorized environments...")
     env = create_vec_env(
@@ -325,6 +367,7 @@ def train_and_export(
         training_cfg=cfg,
         interpolation_resolution=interpolation_resolution,
         use_subproc=use_subproc,
+        env_cfg=env_cfg,
     )
 
     # Build policy kwargs from config
@@ -358,21 +401,43 @@ def train_and_export(
         max_grad_norm=cfg.max_grad_norm,
         verbose=cfg.verbose,
         tensorboard_log=tb_log,
+        seed=cfg.seed,
         device="auto",
     )
 
     print(f"\nStarting training for {cfg.timesteps:,} timesteps...")
     print(f"Expected updates: {cfg.timesteps // (cfg.n_envs * cfg.n_steps)}")
+    if tb_log:
+        print(f"TensorBoard logs: {tb_log}  (view with: tensorboard --logdir {tb_log})")
+    else:
+        print("WARNING: tensorboard_log is unset - this run will produce no learning curves.")
 
-    curriculum_cb = CurriculumCallback(verbose=cfg.verbose)
-    model.learn(total_timesteps=cfg.timesteps, callback=curriculum_cb)
+    import os
+    model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
+    os.makedirs(model_dir, exist_ok=True)
+
+    callbacks: list[BaseCallback] = [CurriculumCallback(verbose=cfg.verbose)]
+    if cfg.save_freq > 0:
+        # save_freq counts calls per env, so divide to get global timesteps
+        callbacks.append(
+            CheckpointCallback(
+                save_freq=max(1, cfg.save_freq // cfg.n_envs),
+                save_path=os.path.join(model_dir, "checkpoints"),
+                name_prefix="ppo_racing",
+                save_vecnormalize=True,
+                verbose=cfg.verbose,
+            )
+        )
+
+    model.learn(
+        total_timesteps=cfg.timesteps,
+        callback=CallbackList(callbacks),
+        log_interval=cfg.log_interval,
+    )
 
     print("\nTRAINING COMPLETED")
 
     # Save model and normalization stats
-    import os
-    model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
-    os.makedirs(model_dir, exist_ok=True)
     model.save(os.path.join(model_dir, "ppo_racing"))
     if isinstance(env, VecNormalize):
         env.save(os.path.join(model_dir, "vec_normalize.pkl"))
@@ -387,6 +452,8 @@ def train_and_export(
             interpolation_resolution=interpolation_resolution,
             enable_telemetry=True,
             enable_curriculum=False,
+            env_cfg=env_cfg,
+            seed=cfg.seed,
         )
     ])
 
@@ -407,10 +474,10 @@ def train_and_export(
     env.close()
 
     # Access the underlying RacingEnv (inside DummyVecEnv, inside VecNormalize)
-    def _get_racing_env():
-        if isinstance(eval_env, VecNormalize):
-            return eval_env.venv.envs[0]
-        return eval_env.envs[0]
+    def _get_racing_env() -> RacingEnv:
+        # envs[0] is a Monitor wrapper; .unwrapped reaches the RacingEnv.
+        venv = eval_env.venv if isinstance(eval_env, VecNormalize) else eval_env
+        return venv.envs[0].unwrapped
 
     best_trajectory = None
     best_checkpoints = 0

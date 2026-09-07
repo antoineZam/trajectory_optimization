@@ -30,8 +30,12 @@ env:
   clip_obs: 10.0       # Observation clipping threshold
   clip_reward: 10.0    # Reward clipping threshold
 
+# Reproducibility: seeds PPO, the vec env and every env reset.
+# A run is only reproducible from (config, seed) together.
+seed: 0
+
 # Logging settings
 verbose: 1
-tensorboard_log: null  # Set to path for TensorBoard logging
-log_interval: 10
-save_freq: 50000
+tensorboard_log: ./tb_logs  # Learning curves; view with: tensorboard --logdir tb_logs
+log_interval: 1            # ROLLOUTS between log dumps, not steps. 1 = one curve point per update.
+save_freq: 50000            # Timesteps between intermediate checkpoints (0 = off)
