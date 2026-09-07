@@ -22,7 +22,15 @@ class _Tee:
         self._mirror = mirror
 
     def write(self, data: str) -> int:
-        self._primary.write(data)
+        # Logging must never be able to kill the job. A single emoji in a
+        # progress message raised UnicodeEncodeError on the cp1252 Windows
+        # console and took down a whole training run -- and it only surfaced
+        # once the agent first completed a lap, because the "new best lap
+        # time" branch had never executed before.
+        try:
+            self._primary.write(data)
+        except UnicodeEncodeError:
+            self._primary.write(data.encode("ascii", "backslashreplace").decode("ascii"))
         self._mirror.write(data)
         # Flush the mirror eagerly: a run killed mid-training must still leave
         # a readable log behind.
@@ -54,6 +62,16 @@ def capture_console(log_path: str | Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_stdout, original_stderr = sys.stdout, sys.stderr
+
+    # Degrade unencodable characters rather than raising. On Windows the
+    # console encoding is cp1252, which cannot represent most of what shows up
+    # in progress output.
+    for stream in (original_stdout, original_stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable TextIOWrapper (e.g. pytest capture)
+
     with path.open("a", encoding="utf-8") as handle:
         sys.stdout = _Tee(original_stdout, handle)
         sys.stderr = _Tee(original_stderr, handle)
