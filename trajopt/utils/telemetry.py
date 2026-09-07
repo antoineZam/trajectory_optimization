@@ -262,7 +262,7 @@ class RacingTelemetry:
             and hasattr(self, 'best_episode')
             and self.current_episode == self.best_episode
         ):
-            print(f"\n{self.YELLOW}🏆 NEW BEST LAP TIME! {summary.lap_time:.1f}s{self.RESET}")
+            print(f"\n{self.YELLOW}[BEST] NEW BEST LAP TIME! {summary.lap_time:.1f}s{self.RESET}")
 
         print(f"{'='*80}\n")
 
