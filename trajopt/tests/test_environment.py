@@ -91,12 +91,6 @@ def test_same_seed_gives_identical_rollouts(track, vehicle_spec):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B1: index_offset = int(spacing / interpolation_resolution) where "
-    "interpolation_resolution is a POINT COUNT (2000), so all four offsets are "
-    "0 and the lookahead horizon is 0 m. Use track.index_offset_for_distance.",
-)
 def test_lookahead_points_are_at_the_requested_distances(env: RacingEnv):
     """The four lookahead points must sit 20/50/80/100 m ahead.
 
@@ -109,7 +103,7 @@ def test_lookahead_points_are_at_the_requested_distances(env: RacingEnv):
     lookahead = env._compute_lookahead_points(track_state)
 
     distances = lookahead[:, 0] * env.cfg.max_lookahead_distance
-    expected = np.array([20.0, 50.0, 80.0, 100.0])
+    expected = np.array(RacingEnv.LOOKAHEAD_SPACING_M)
 
     assert len(set(np.round(distances, 3))) == 4, (
         f"lookahead points are not distinct: {distances}"

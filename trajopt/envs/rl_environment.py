@@ -119,6 +119,9 @@ class RacingEnv(gym.Env):
     # Number of lookahead points
     NUM_LOOKAHEAD_POINTS = 4
 
+    # Distances ahead, in METERS of arc length along the centerline
+    LOOKAHEAD_SPACING_M = (20.0, 50.0, 80.0, 100.0)
+
     def __init__(
         self,
         track: Track,
@@ -374,13 +377,16 @@ class RacingEnv(gym.Env):
 
         lookahead_data = np.zeros((self.NUM_LOOKAHEAD_POINTS, 2), dtype=np.float32)
 
-        # Sample points at increasing distances ahead
-        # Spacing: 10, 25, 50, 100 meters ahead (approximately)
-        lookahead_spacing = [20.0, 50.0, 80.0, 100.0]  # meters on interpolated track
+        # Sample points at increasing distances ahead, in meters along the track
+        lookahead_spacing = self.LOOKAHEAD_SPACING_M
 
         for i, spacing in enumerate(lookahead_spacing):
-            # Get point ahead on track (wrap around for closed track)
-            index_offset = int(spacing / self.track.interpolation_resolution)
+            # Get point ahead on track (wrap around for closed track).
+            # interpolation_resolution is a POINT COUNT, so dividing a distance
+            # by it yielded 0 for every spacing here: all four lookahead points
+            # collapsed onto the vehicle's own position and the effective
+            # horizon was 0 m. arc_step is the real meters-per-index factor.
+            index_offset = self.track.index_offset_for_distance(spacing)
             ahead_idx = (closest_idx + index_offset) % num_points
             ahead_point = centerline[ahead_idx]
 
