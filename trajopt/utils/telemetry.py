@@ -230,9 +230,9 @@ class RacingTelemetry:
 
         # Completion status
         if summary.lap_completed:
-            status = f"{self.GREEN}✅ LAP COMPLETED{self.RESET}"
+            status = f"{self.GREEN}[SUCCESS] LAP COMPLETED{self.RESET}"
         else:
-            status = f"{self.RED}❌ {summary.termination_reason.upper()}{self.RESET}"
+            status = f"{self.RED}[FAILED] {summary.termination_reason.upper()}{self.RESET}"
         print(f"Status: {status}")
         print(f"Duration: {summary.lap_time:.1f}s")
         print(f"Progress: {summary.checkpoints_hit}/{summary.max_checkpoints} checkpoints")
