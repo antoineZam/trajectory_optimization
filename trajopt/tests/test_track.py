@@ -8,13 +8,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from utils.curriculum import CurriculumLearning
 from utils.track import Track
 
-
-def _curriculum_multipliers() -> list[float]:
-    """Every track width the curriculum can put the agent on."""
-    return sorted({s.track_width_multiplier for s in CurriculumLearning().stages} | {1.0})
+# Width multipliers to check the geometry against. 1.0 is the real track; the
+# wider ones are a robustness sweep -- the boundary offset and the polygon both
+# used to break above ~3.5x, and any future variable-width track will land
+# somewhere in this range.
+WIDTH_MULTIPLIERS = [1.0, 1.2, 1.8, 2.5, 3.5, 5.0]
 
 
 def test_arc_step_is_meters_not_point_count(track: Track):
@@ -41,8 +41,8 @@ def test_index_offset_for_distance_matches_arc_length(track: Track):
         assert travelled == pytest.approx(requested, abs=2.0 * track.arc_step)
 
 
-@pytest.mark.parametrize("multiplier", _curriculum_multipliers())
-def test_track_polygon_is_valid_at_every_curriculum_width(track: Track, multiplier: float):
+@pytest.mark.parametrize("multiplier", WIDTH_MULTIPLIERS)
+def test_track_polygon_is_valid_at_every_width(track: Track, multiplier: float):
     """Shapely predicates are undefined on invalid geometry.
 
     The polygon used to be built as a single self-intersecting ring, and the
@@ -62,7 +62,7 @@ def test_track_polygon_is_valid_at_every_curriculum_width(track: Track, multipli
     assert len(polygon.interiors) == 1
 
 
-@pytest.mark.parametrize("multiplier", _curriculum_multipliers())
+@pytest.mark.parametrize("multiplier", WIDTH_MULTIPLIERS)
 def test_centerline_is_entirely_inside_the_track(track: Track, multiplier: float):
     """Regression: the two samples at the start/finish seam read as off-track.
 
