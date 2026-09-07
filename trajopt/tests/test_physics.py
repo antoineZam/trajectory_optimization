@@ -231,3 +231,30 @@ def test_steering_limiter_is_continuous_and_monotonic(vehicle_spec: VehicleSpec)
     assert np.all(steps <= 1e-9), "steering limiter is not monotonically decreasing"
     # No jump larger than 1 degree between adjacent 0.1 m/s samples
     assert np.max(np.abs(steps)) < np.radians(1.0), "steering limiter is discontinuous"
+
+
+def test_gearbox_does_not_hunt(vehicle_spec: VehicleSpec):
+    """Holding a steady speed must not oscillate between gears.
+
+    The gearbox shifts at most one gear per step with no shift time, which
+    could in principle hunt around a threshold. Measured worst case is 0.15
+    changes/s, so it does not -- this pins that.
+
+    What is still missing is shift duration and the torque cut that goes with
+    it. That needs a shift timer in VehicleState, i.e. hidden state the agent
+    cannot observe, so it belongs with the observation rework rather than here.
+    """
+    for speed in np.arange(5.0, 70.0, 5.0):
+        state = _state(vx=float(speed), gear=3, rpm=3000.0)
+        for _ in range(40):  # let the gear settle
+            state = step_dynamics(vehicle_spec, state, DT, 0.35, 0.0, 0.0)
+
+        previous_gear = state.gear
+        changes = 0
+        for _ in range(400):  # 20 s
+            state = step_dynamics(vehicle_spec, state, DT, 0.35, 0.0, 0.0)
+            if state.gear != previous_gear:
+                changes += 1
+            previous_gear = state.gear
+
+        assert changes <= 4, f"{changes} gear changes in 20 s at {speed} m/s"
