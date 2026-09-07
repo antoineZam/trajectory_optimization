@@ -13,6 +13,7 @@ import pytest
 from physics.physics_engine import (
     VehicleSpec,
     VehicleState,
+    aero_forces,
     get_max_steering_angle,
     step_dynamics,
     tire_mu,
@@ -130,34 +131,63 @@ def test_safety_clamps_are_not_load_bearing(vehicle_spec: VehicleSpec):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3: Fx and Fy are computed independently; no friction circle. "
-    "Braking reaches 2.02 g against a mu of 1.6.",
-)
-def test_combined_longitudinal_and_lateral_force_respects_friction_circle(
-    vehicle_spec: VehicleSpec,
-):
-    """sqrt(Fx^2 + Fy^2) <= mu * Fz per axle.
+def test_braking_stays_within_the_available_grip(vehicle_spec: VehicleSpec):
+    """Longitudinal deceleration cannot exceed mu * Fz / m.
 
-    This is the single most important property for a racing line: braking in a
-    straight line, an apex, then progressive reacceleration all follow from the
-    grip budget being shared between axes.
+    Fz includes aerodynamic downforce, which is why braking legitimately
+    exceeds mu0 at speed: at 60 m/s the downforce is 93% of the car's weight
+    and 3.09 g is genuinely available. The test therefore brakes from a low
+    speed, where aero is a few percent, and compares against the real budget.
     """
-    static_axle_load = vehicle_spec.mass * GRAVITY * vehicle_spec.mass_split_front
-    grip_limit = tire_mu(vehicle_spec, static_axle_load) * static_axle_load
+    initial_speed = 15.0
+    state = _state(vx=initial_speed)
 
     peak_decel = 0.0
-    state = _state(vx=60.0)
-    for _ in range(80):
-        previous_speed = float(np.hypot(state.vx, state.vy))
+    previous_speed = initial_speed
+    for _ in range(60):
         state = step_dynamics(vehicle_spec, state, DT, 0.0, 1.0, 0.0)
         speed = float(np.hypot(state.vx, state.vy))
         peak_decel = max(peak_decel, (previous_speed - speed) / DT)
+        previous_speed = speed
 
-    # Whole-vehicle deceleration cannot exceed the whole-vehicle grip
-    total_grip_g = grip_limit / (vehicle_spec.mass * GRAVITY) / vehicle_spec.mass_split_front
-    assert peak_decel / GRAVITY <= total_grip_g * 1.05
+    _, downforce = aero_forces(vehicle_spec, initial_speed)
+    normal_load = vehicle_spec.mass * GRAVITY + downforce
+    available_g = tire_mu(vehicle_spec, normal_load / 2.0) * normal_load / (
+        vehicle_spec.mass * GRAVITY
+    )
+
+    assert peak_decel / GRAVITY <= available_g * 1.05, (
+        f"peak {peak_decel / GRAVITY:.2f} g exceeds the {available_g:.2f} g available"
+    )
+
+
+def test_steering_eats_into_the_braking_budget(vehicle_spec: VehicleSpec):
+    """The friction circle: Fx and Fy share one grip budget per axle.
+
+    This is the property every feature of a racing line rests on -- braking
+    in a straight line, the apex, progressive reacceleration. Previously Fx
+    and Fy were computed independently, so the car could brake at its limit
+    and corner at its limit simultaneously, and the optimal policy for this
+    simulator was "full throttle everywhere while steering".
+    """
+    def one_step_decel(steer_deg: float) -> float:
+        state = _state(vx=20.0)
+        after = step_dynamics(
+            vehicle_spec, state, DT, 0.0, 1.0, np.radians(steer_deg)
+        )
+        speed = float(np.hypot(after.vx, after.vy))
+        return (20.0 - speed) / DT
+
+    decels = [one_step_decel(d) for d in (0.0, 2.0, 5.0, 10.0)]
+
+    # More steering must leave less grip for braking, monotonically.
+    assert all(a > b for a, b in zip(decels, decels[1:])), (
+        f"braking did not decrease with steering angle: {decels}"
+    )
+    # And the effect must be material, not numerical noise.
+    assert decels[0] - decels[-1] > 0.2, (
+        f"grip sharing is negligible: {decels[0]:.3f} -> {decels[-1]:.3f} m/s^2"
+    )
 
 
 def test_braking_never_reverses_the_vehicle(vehicle_spec: VehicleSpec):

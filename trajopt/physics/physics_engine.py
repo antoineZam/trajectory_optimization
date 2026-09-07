@@ -139,6 +139,27 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float = 4000.0) -> float:
     return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
 
 
+def _apply_friction_circle(
+    Fx: float, Fy: float, grip_budget: float
+) -> tuple[float, float]:
+    """Scale an axle's force vector back onto its friction circle.
+
+    Args:
+        Fx: Longitudinal force at the axle (N).
+        Fy: Lateral force at the axle (N).
+        grip_budget: Maximum force magnitude the axle can transmit, mu * Fz (N).
+
+    Returns:
+        (Fx, Fy) scaled so that sqrt(Fx^2 + Fy^2) <= grip_budget, preserving
+        the direction of the demand.
+    """
+    magnitude = float(np.hypot(Fx, Fy))
+    if magnitude <= grip_budget or magnitude < 1e-9:
+        return Fx, Fy
+    scale = grip_budget / magnitude
+    return Fx * scale, Fy * scale
+
+
 def get_max_speed_for_gear(
     spec: VehicleSpec,
     gear: int,
@@ -293,7 +314,6 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         # but not accelerate it in either direction.
         Fx_brake = -np.clip(Fx_driven, -Fx_brake_capacity, Fx_brake_capacity)
 
-    Fx_long = Fx_driven + Fx_brake - np.sign(s.vx) * drag
 
     # CG-to-axle distances from wheelbase and mass split
     lf = spec.wheelbase * (1.0 - spec.mass_split_front)  # CG to front axle
@@ -321,6 +341,32 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     Ca_r = Fy_max_rear / ALPHA_PEAK
     Fy_front = np.clip(-Ca_f * alpha_f, -Fy_max_front, Fy_max_front)
     Fy_rear = np.clip(-Ca_r * alpha_r, -Fy_max_rear, Fy_max_rear)
+
+    # --- Friction circle -----------------------------------------------------
+    # A tire has ONE grip budget shared between longitudinal and lateral force:
+    # sqrt(Fx^2 + Fy^2) <= mu * Fz. Fx and Fy were computed independently, so
+    # the model could brake at 2.02 g on a mu of 1.6 while simultaneously
+    # generating full cornering force. Every property of a racing line --
+    # braking in a straight line, the apex, progressive reacceleration --
+    # follows from this constraint, so without it the optimal policy for this
+    # simulator was "full throttle everywhere while steering", which has
+    # nothing to do with driving.
+    #
+    # Longitudinal force is split per axle: brakes by their designed bias,
+    # drive torque by mass distribution. The latter is an approximation --
+    # the spec carries no drive-layout parameter -- but it keeps the budget
+    # honest at both ends. Aerodynamic drag acts on the body, not through the
+    # contact patch, so it does not consume tire grip.
+    Fx_front = Fx_driven * spec.mass_split_front + Fx_brake * spec.brake_split_front
+    Fx_rear = (
+        Fx_driven * (1.0 - spec.mass_split_front)
+        + Fx_brake * (1.0 - spec.brake_split_front)
+    )
+
+    Fx_front, Fy_front = _apply_friction_circle(Fx_front, Fy_front, mu_f * Fz_front)
+    Fx_rear, Fy_rear = _apply_friction_circle(Fx_rear, Fy_rear, mu_r * Fz_rear)
+
+    Fx_long = Fx_front + Fx_rear - np.sign(s.vx) * drag
 
     # Equations of motion (planar bicycle model)
     ax = (Fx_long - Fy_front * np.sin(steer)) / spec.mass + s.vy * s.yaw_rate
