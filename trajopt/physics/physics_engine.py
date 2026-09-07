@@ -277,10 +277,20 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     lf = spec.wheelbase * (1.0 - spec.mass_split_front)  # CG to front axle
     lr = spec.wheelbase * spec.mass_split_front           # CG to rear axle
 
-    # Tire slip angles (bicycle model)
+    # Tire slip angles (bicycle model), standard SAE convention:
+    #   alpha = atan(v_lat_at_axle / v_long) - steer
+    # so that a positive slip angle produces a NEGATIVE lateral force
+    # (Fy = -Ca * alpha) and the yaw mode is damped.
+    #
+    # These were previously written with the opposite sign on both axles, which
+    # negates Fy_front and Fy_rear while leaving the kinematic coupling terms
+    # (-vx*yaw_rate in ay) untouched. That flips the sign of the yaw damping
+    # coefficient and makes the yaw mode exponentially DIVERGENT: with zero
+    # steering, a 0.01 rad/s perturbation doubled every ~73 ms and ran into the
+    # +/-20 rad/s safety clamp. The vehicle was not controllable by any policy.
     vx_safe = max(abs(s.vx), 1.0)
-    alpha_f = steer - np.arctan2(s.vy + lf * s.yaw_rate, vx_safe)
-    alpha_r = -np.arctan2(s.vy - lr * s.yaw_rate, vx_safe)
+    alpha_f = np.arctan2(s.vy + lf * s.yaw_rate, vx_safe) - steer
+    alpha_r = np.arctan2(s.vy - lr * s.yaw_rate, vx_safe)
 
     # Linear cornering stiffness with saturation at Fy_max.
     # Peak grip reached at ~7 deg slip angle (typical racing tire).
