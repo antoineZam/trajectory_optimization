@@ -39,11 +39,14 @@ def env(track: Track, vehicle_spec: VehicleSpec) -> RacingEnv:
 
     Curriculum off and telemetry off: tests must exercise the task the export
     step actually evaluates on, not a widened training variant.
+
+    max_steps is 3000 rather than the 1500 default so a slow lap still fits,
+    but small enough that a controller which fails to lap fails fast.
     """
     return RacingEnv(
         track=track,
         veh_spec=vehicle_spec,
-        cfg=RLConfig(max_steps=30_000),
+        cfg=RLConfig(max_steps=3_000),
         enable_telemetry=False,
         enable_curriculum=False,
     )

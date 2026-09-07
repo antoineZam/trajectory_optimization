@@ -212,7 +212,7 @@ class PurePursuitController:
 def drive(
     env,
     controller: PurePursuitController,
-    max_steps: int = 20_000,
+    max_steps: int = 5_000,
     laps: float = 1.0,
 ) -> dict:
     """Drive `env` with `controller` until the requested distance is covered.
@@ -225,7 +225,8 @@ def drive(
     Args:
         env: A `RacingEnv` instance (unwrapped).
         controller: Controller to drive with.
-        max_steps: Hard step budget.
+        max_steps: Hard step budget, on top of the environment's own
+            max_steps. A lap is ~540 steps at the reference pace.
         laps: Number of laps to cover before stopping.
 
     Note that a completed lap now terminates the episode, so `laps` above 1.0
