@@ -14,7 +14,10 @@ gamma: 0.995         # 1/(1-g) = 200 steps = 10 s horizon; a lap is ~540 steps.
                      # lap bonus was worth less than one step of progress reward.
 gae_lambda: 0.95     # GAE lambda for advantage estimation
 clip_range: 0.2      # PPO clipping parameter
-ent_coef: 0.01       # Entropy coefficient (encourages exploration)
+ent_coef: 0.0          # SB3's default for continuous control. At 0.01 the
+                       # entropy bonus was 3.3x the policy gradient and pinned
+                       # the action std at its initialisation of 1.0 -- on a
+                       # [-1, 1] steering axis that is almost pure noise.
 vf_coef: 0.5         # Value function loss coefficient
 max_grad_norm: 0.5   # Gradient clipping
 

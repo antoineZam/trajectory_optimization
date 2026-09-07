@@ -50,7 +50,7 @@ class TrainingConfig:
     gamma: float = 0.995  # 10 s horizon at dt=0.05; a lap is ~27 s
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    ent_coef: float = 0.01
+    ent_coef: float = 0.0  # 0.01 pinned the action std at 1.0; see conf/training
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
 
