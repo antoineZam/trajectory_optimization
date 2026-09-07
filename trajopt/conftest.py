@@ -42,11 +42,13 @@ def env(track: Track, vehicle_spec: VehicleSpec) -> RacingEnv:
 
     max_steps is 3000 rather than the 1500 default so a slow lap still fits,
     but small enough that a controller which fails to lap fails fast.
+    Randomization is off so reference lap times are comparable; the random
+    starts are exercised by their own tests.
     """
     return RacingEnv(
         track=track,
         veh_spec=vehicle_spec,
-        cfg=RLConfig(max_steps=3_000),
+        cfg=RLConfig(max_steps=3_000, randomize_reset=False),
         enable_telemetry=False,
         enable_curriculum=False,
     )

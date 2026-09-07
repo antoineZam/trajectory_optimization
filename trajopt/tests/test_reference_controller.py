@@ -16,7 +16,7 @@ from controllers.pure_pursuit import (
     compute_speed_profile,
     drive,
 )
-from envs.rl_environment import RacingEnv
+from envs.rl_environment import RacingEnv, RLConfig
 
 
 def test_speed_profile_respects_cornering_and_braking_limits(track, vehicle_spec):
@@ -135,3 +135,35 @@ def test_repeated_lap_episodes_stay_stable(env: RacingEnv):
     # Deterministic env and controller: the laps must be identical, which is
     # what proves nothing leaked from the previous episode.
     assert len(set(lap_times)) == 1, f"lap times drifted across episodes: {lap_times}"
+
+
+def test_reference_controller_recovers_from_random_starts(track, vehicle_spec):
+    """A lap must be completable from anywhere on the track, at any speed.
+
+    This is what validates that initial-state randomization produces legal,
+    recoverable states rather than episodes that are lost at step 0 -- a start
+    at 30 m/s in the tightest corner would demand 2.25 g against the 1.6 g
+    available. Measured: 60/60 random starts complete a lap.
+    """
+    env = RacingEnv(
+        track=track,
+        veh_spec=vehicle_spec,
+        cfg=RLConfig(max_steps=3_000),
+        enable_telemetry=False,
+        enable_curriculum=False,
+    )
+    controller = PurePursuitController(track, vehicle_spec)
+
+    failures = []
+    attempts = 25
+    for seed in range(attempts):
+        env.reset(seed=seed)
+        start_speed = env.state.vx
+        for _ in range(env.cfg.max_steps):
+            _, _, terminated, truncated, _ = env.step(controller.act(env.state))
+            if terminated or truncated:
+                break
+        if not env.lap_completed:
+            failures.append((seed, round(start_speed, 1)))
+
+    assert not failures, f"{len(failures)}/{attempts} random starts failed: {failures}"

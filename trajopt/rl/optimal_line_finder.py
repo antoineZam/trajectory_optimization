@@ -461,7 +461,9 @@ def train_and_export(
             interpolation_resolution=interpolation_resolution,
             enable_telemetry=True,
             enable_curriculum=False,
-            env_cfg=env_cfg,
+            # Deterministic start on the line: the exported trajectory has to
+            # be a comparable lap, not one begun from a random point.
+            env_cfg={**(env_cfg or {}), "randomize_reset": False},
             seed=cfg.seed,
         )
     ])

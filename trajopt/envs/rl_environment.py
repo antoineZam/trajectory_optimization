@@ -87,6 +87,14 @@ class RLConfig:
     # Checkpoint system
     num_checkpoints: int = 4
 
+    # Initial-state randomization. Off gives a deterministic start on the
+    # centerline at the start line, which is what the export needs for a
+    # comparable lap; on spreads episodes over the whole track.
+    randomize_reset: bool = True
+    reset_lateral_fraction: float = 0.6  # of the half-width, either side
+    reset_max_speed: float = 30.0  # m/s; lower bound is min_speed
+    reset_heading_error: float = 0.2  # rad, either side of the track tangent
+
     @classmethod
     def from_dict(cls, config: dict | None) -> RLConfig:
         """Build an RLConfig from a plain dict (e.g. the Hydra `env` group).
@@ -554,6 +562,68 @@ class RacingEnv(gym.Env):
     # Environment Interface
     # =========================================================================
 
+    def _sample_initial_state(self) -> VehicleState:
+        """Build the starting vehicle state for an episode.
+
+        With `cfg.randomize_reset` the start is drawn from the whole track:
+        any point around the lap, offset laterally, at any racing speed, with
+        a small heading error. Without it the vehicle is placed on the
+        centerline at the start line at `cfg.min_speed`, which is what the
+        export needs to produce a comparable lap.
+
+        Randomisation matters more than it looks. reset() previously always
+        placed the vehicle at centerline[0] with vx=5.0 and no noise at all,
+        so all four parallel workers produced identical rollouts: an 8192-step
+        batch had the effective diversity of 2048 samples, the value function
+        was only ever trained inside one narrow tube of state space, and 99
+        recorded episodes agreed to 16 significant figures.
+
+        Returns:
+            The initial VehicleState.
+        """
+        centerline = self.track.interpolated_centerline
+
+        if not self.cfg.randomize_reset:
+            start_idx = 0
+            lateral = 0.0
+            speed = self.cfg.min_speed
+            heading_error = 0.0
+        else:
+            start_idx = int(self.np_random.integers(len(centerline)))
+            lateral = float(
+                self.np_random.uniform(-self.cfg.reset_lateral_fraction,
+                                       self.cfg.reset_lateral_fraction)
+            ) * (self.track.width / 2.0)
+            speed = float(
+                self.np_random.uniform(self.cfg.min_speed, self.cfg.reset_max_speed)
+            )
+            heading_error = float(
+                self.np_random.uniform(-self.cfg.reset_heading_error,
+                                       self.cfg.reset_heading_error)
+            )
+
+        # Track tangent at the start point, using periodic differences so the
+        # seam is not a special case.
+        nxt = centerline[(start_idx + 1) % len(centerline)]
+        prv = centerline[(start_idx - 1) % len(centerline)]
+        tangent = nxt - prv
+        tangent = tangent / max(float(np.linalg.norm(tangent)), 1e-9)
+        normal = np.array([-tangent[1], tangent[0]])
+
+        position = centerline[start_idx] + normal * lateral
+        yaw = float(np.arctan2(tangent[1], tangent[0])) + heading_error
+
+        return VehicleState(
+            x=float(position[0]),
+            y=float(position[1]),
+            yaw=yaw,
+            vx=speed,
+            vy=0.0,
+            yaw_rate=0.0,
+            gear=2,
+            rpm=2000.0,
+        )
+
     def reset(
         self,
         seed: int | None = None,
@@ -587,30 +657,11 @@ class RacingEnv(gym.Env):
         self.prev_brake = 0.0
         self.prev_steer = 0.0
 
-        # Initialize vehicle at start of track
-        x0, y0 = self.track.centerline[0]
-
-        # Compute initial heading from first two track points
-        if len(self.track.centerline) > 1:
-            dx = self.track.centerline[1][0] - x0
-            dy = self.track.centerline[1][1] - y0
-            initial_yaw = np.arctan2(dy, dx)
-        else:
-            initial_yaw = 0.0
-
-        self.state = VehicleState(
-            x=x0,
-            y=y0,
-            yaw=initial_yaw,
-            vx=5.0,  # Start with some forward velocity
-            vy=0.0,
-            yaw_rate=0.0,
-            gear=2,
-            rpm=2000.0,
-        )
+        # Initialize vehicle
+        self.state = self._sample_initial_state()
 
         # Initialize previous position for distance tracking
-        self._prev_position = np.array([x0, y0])
+        self._prev_position = np.array([self.state.x, self.state.y])
 
         # Anchor the progress baseline to where the vehicle actually is, so
         # cumulative_progress counts from the start position rather than from

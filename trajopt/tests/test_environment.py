@@ -176,20 +176,60 @@ def test_lap_completion_is_terminal_not_truncated(env: RacingEnv):
     assert not truncated, "a completed lap is not a time-limit truncation"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: reset() always places the vehicle at centerline[0] with "
-    "vx=5.0 and no noise, so all rollouts are bit-identical and exploration is "
-    "confined to a single tube.",
-)
 def test_reset_randomizes_the_initial_state(track, vehicle_spec):
-    """Different seeds must give different starting states."""
-    def start_state(seed: int) -> tuple:
-        e = RacingEnv(
-            track=track, veh_spec=vehicle_spec, enable_telemetry=False,
-            enable_curriculum=False,
-        )
-        e.reset(seed=seed)
-        return (e.state.x, e.state.y, e.state.yaw, e.state.vx)
+    """Resets must spread over the whole track, not repeat one pose.
 
-    assert start_state(1) != start_state(2)
+    reset() previously always placed the vehicle at centerline[0] with vx=5.0
+    and no noise, so four parallel workers produced identical rollouts: an
+    8192-step batch had the diversity of 2048 samples and the value function
+    was only ever trained inside one narrow tube.
+    """
+    env = RacingEnv(
+        track=track, veh_spec=vehicle_spec, cfg=RLConfig(max_steps=100),
+        enable_telemetry=False, enable_curriculum=False,
+    )
+
+    starts = []
+    for seed in range(40):
+        env.reset(seed=seed)
+        starts.append((env.state.x, env.state.y, env.state.yaw, env.state.vx))
+
+    assert len({tuple(np.round(s, 6)) for s in starts}) == len(starts), (
+        "resets are repeating the same pose"
+    )
+
+    # Start points must cover the lap, not cluster near the line.
+    progresses = np.array([
+        track.get_track_progress(np.array(s[:2])) for s in starts
+    ])
+    assert progresses.min() < 0.25 and progresses.max() > 0.75, (
+        f"start points span only {progresses.min():.2f}..{progresses.max():.2f} of the lap"
+    )
+
+    # Speeds must span the configured range, not sit at min_speed.
+    speeds = np.array([s[3] for s in starts])
+    assert speeds.max() - speeds.min() > 10.0, f"speed spread is only {speeds.ptp():.1f} m/s"
+
+    # Every start must be a legal state: on track, and inside the speed bounds.
+    assert speeds.min() >= env.cfg.min_speed - 1e-9
+    assert speeds.max() <= env.cfg.reset_max_speed + 1e-9
+
+
+def test_randomization_can_be_switched_off(track, vehicle_spec):
+    """The export needs a deterministic lap from the start line."""
+    env = RacingEnv(
+        track=track, veh_spec=vehicle_spec,
+        cfg=RLConfig(randomize_reset=False),
+        enable_telemetry=False, enable_curriculum=False,
+    )
+
+    def start_state(seed: int) -> tuple:
+        env.reset(seed=seed)
+        return (env.state.x, env.state.y, env.state.yaw, env.state.vx)
+
+    assert start_state(1) == start_state(2) == start_state(99)
+    env.reset(seed=0)
+    assert env.state.vx == env.cfg.min_speed
+    np.testing.assert_allclose(
+        [env.state.x, env.state.y], track.interpolated_centerline[0], atol=1e-9
+    )

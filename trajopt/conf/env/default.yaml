@@ -34,3 +34,12 @@ termination_penalty: -10.0
 
 # --- Checkpoint system --------------------------------------------------------
 num_checkpoints: 4
+
+# --- Initial-state randomization ----------------------------------------------
+# reset() used to always place the vehicle at centerline[0] at 5 m/s with no
+# noise, so parallel workers produced identical rollouts and the value function
+# only ever saw one narrow tube of state space.
+randomize_reset: true
+reset_lateral_fraction: 0.6   # of the half-width, either side of the centerline
+reset_max_speed: 30.0         # m/s; the lower bound is min_speed
+reset_heading_error: 0.2      # rad, either side of the track tangent
