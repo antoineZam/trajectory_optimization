@@ -416,7 +416,8 @@ def train_and_export(
     model_dir = os.path.join(os.path.dirname(out_path), "saved_model")
     os.makedirs(model_dir, exist_ok=True)
 
-    callbacks: list[BaseCallback] = [CurriculumCallback(verbose=cfg.verbose)]
+    curriculum_cb = CurriculumCallback(verbose=cfg.verbose)
+    callbacks: list[BaseCallback] = [curriculum_cb]
     if cfg.save_freq > 0:
         # save_freq counts calls per env, so divide to get global timesteps
         callbacks.append(
@@ -436,6 +437,14 @@ def train_and_export(
     )
 
     print("\nTRAINING COMPLETED")
+
+    # Which curriculum stage the budget actually reached, for the train/eval
+    # mismatch check further down.
+    curriculum_stage_at_end = curriculum_cb.curriculum.get_current_stage()
+    print(
+        f"Final curriculum stage: {curriculum_stage_at_end.name} "
+        f"({curriculum_stage_at_end.track_width_multiplier:.1f}x track width)"
+    )
 
     # Save model and normalization stats
     model.save(os.path.join(model_dir, "ppo_racing"))
@@ -470,6 +479,23 @@ def train_and_export(
     else:
         eval_env = raw_eval_env
 
+    # Make the train/eval mismatch loud instead of silent. The eval env runs
+    # with enable_curriculum=False, i.e. the real track width and strict
+    # termination, while training may have spent the whole budget on a stage
+    # that widens the track by up to 5x and never terminates. A policy trained
+    # there has no reason to work here, and the resulting 18-step off-track
+    # excursion is easy to mistake for a bad policy rather than a mismatch.
+    training_stage = curriculum_stage_at_end
+    if training_stage is not None and training_stage.track_width_multiplier != 1.0:
+        print(
+            f"\nWARNING: training ended on curriculum stage "
+            f"'{training_stage.name}' at {training_stage.track_width_multiplier:.1f}x "
+            f"track width ({track.width * training_stage.track_width_multiplier:.0f} m), "
+            f"but evaluation runs on the real {track.width:.0f} m track with strict "
+            f"termination. Expect the export to fail: the policy has never seen "
+            f"this task."
+        )
+
     # Close training environment (after copying stats)
     env.close()
 
@@ -480,51 +506,75 @@ def train_and_export(
         return venv.envs[0].unwrapped
 
     best_trajectory = None
-    best_checkpoints = 0
     max_attempts = 10
+
+    racing_env = _get_racing_env()
+    best_score = None
 
     for attempt in range(max_attempts):
         obs = eval_env.reset()
-        done = False
         xs, ys, vs = [], [], []
 
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = eval_env.step(action)
-            s = _get_racing_env().state
+        def _record() -> None:
+            s = racing_env.state
             xs.append(s.x)
             ys.append(s.y)
-            vs.append(np.hypot(s.vx, s.vy))
-            done = bool(done[0])
+            vs.append(float(np.hypot(s.vx, s.vy)))
 
-        racing_env = _get_racing_env()
-        checkpoints_hit = (
-            len(racing_env.checkpoints_hit)
-            if hasattr(racing_env, 'checkpoints_hit') else 0
-        )
-        lap_completed = racing_env.lap_completed if hasattr(racing_env, 'lap_completed') else False
+        _record()  # starting state
 
-        print(f"  Attempt {attempt + 1}/{max_attempts}: {checkpoints_hit}/4 checkpoints, "
-              f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} steps")
+        while True:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, dones, infos = eval_env.step(action)
 
-        if checkpoints_hit > best_checkpoints:
-            best_checkpoints = checkpoints_hit
+            if dones[0]:
+                # DummyVecEnv auto-resets on done, so by the time control
+                # returns here racing_env.state, .checkpoints_hit and
+                # .lap_completed already describe the NEXT episode. Reading
+                # them after the loop is why every attempt reported 0/4
+                # checkpoints and lap_completed False, which made
+                # `checkpoints_hit > best_checkpoints` permanently false,
+                # left best_trajectory as None, and still exported the raw
+                # xs/ys/vs of the last attempt -- whose final point was the
+                # reset state, visible as [120.0, 0.0, 5.0] in the shipped
+                # optimal_traj.npy. The episode's results survive only here.
+                checkpoints_hit = int(infos[0].get("checkpoints_hit", 0))
+                lap_completed = bool(infos[0].get("lap_completed", False))
+                break
+
+            _record()
+
+        print(f"  Attempt {attempt + 1}/{max_attempts}: "
+              f"{checkpoints_hit}/{racing_env.cfg.num_checkpoints} checkpoints, "
+              f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} points")
+
+        # Prefer a completed lap, then more checkpoints, then a faster run.
+        score = (lap_completed, checkpoints_hit, -len(xs))
+        if best_score is None or score > best_score:
+            best_score = score
             best_trajectory = (xs, ys, vs, lap_completed, checkpoints_hit)
 
         if lap_completed:
             print("\nSuccessfully captured completed lap trajectory!")
             break
-    else:
-        if best_trajectory is not None:
-            xs, ys, vs, lap_completed, checkpoints_hit = best_trajectory
-            print(f"\nNo completed lap in {max_attempts} attempts. "
-                  f"Using best trajectory with {checkpoints_hit}/4 checkpoints.")
-        else:
-            print("\nFailed to generate any valid trajectory.")
+
+    if best_trajectory is None:
+        raise RuntimeError(
+            "Evaluation produced no trajectory at all. The trained model is "
+            "saved; re-run the export separately."
+        )
+
+    xs, ys, vs, lap_completed, checkpoints_hit = best_trajectory
+    if not lap_completed:
+        print(
+            f"\nWARNING: no completed lap in {max_attempts} attempts. Exporting "
+            f"the best run ({checkpoints_hit}/{racing_env.cfg.num_checkpoints} "
+            f"checkpoints, {len(xs)} points). This is NOT an optimal racing "
+            f"line -- treat it as a diagnostic trace."
+        )
 
     # Export telemetry from eval environment
-    racing_env = _get_racing_env()
-    if hasattr(racing_env, 'telemetry') and racing_env.telemetry:
+    if racing_env.telemetry:
         print("Exporting telemetry data...")
         racing_env.telemetry.save_summaries()
         try:
