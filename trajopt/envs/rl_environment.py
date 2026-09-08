@@ -45,10 +45,19 @@ class RLConfig:
 
     # Simulation parameters
     dt: float = 0.05  # Timestep in seconds
-    # A lap of the sample track is ~540 steps (27 s) at the reference pace.
-    # 1500 leaves room for a slow lap without burning a whole rollout on one
-    # episode; the old 8000 assumed a lap took 8000 steps, a 15x error.
-    max_steps: int = 1500  # Maximum steps per episode
+    # Maximum steps per episode, or None to derive it from the lap length.
+    #
+    # A fixed budget only fits one track. On the 607 m sample oval a lap is
+    # ~540 steps (27 s) at the reference pace and 1500 leaves room for a slow
+    # one; the same 1500 steps cover 2 km of Spa's 7 km, so every episode there
+    # would truncate a third of the way round, and no agent could ever see a
+    # checkpoint bonus, let alone a lap. None gives each track the same
+    # allowance in *laps* instead of in steps -- see `max_steps_lap_factor`.
+    max_steps: int | None = None
+    # Episode budget in reference laps, when max_steps is None. The reference
+    # lap is the track length at `target_speed`; 3 laps of allowance is 1458
+    # steps on the sample oval, within 3% of the 1500 tuned there.
+    max_steps_lap_factor: float = 3.0
 
     # Normalization constants (for observation scaling)
     max_speed: float = 50.0  # m/s (~180 km/h)
@@ -172,6 +181,10 @@ class RacingEnv(gym.Env):
         self.track = track
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
+        # Resolved episode budget: `cfg.max_steps` when it is set, otherwise
+        # this track's share of it. Read this, not `cfg.max_steps`, which may
+        # be None.
+        self.max_steps = self._resolve_max_steps()
 
         self.telemetry = RacingTelemetry() if enable_telemetry else None
 
@@ -224,6 +237,19 @@ class RacingEnv(gym.Env):
             "total_episodes": 0,
         }
 
+
+    def _resolve_max_steps(self) -> int:
+        """Episode step budget for the current track.
+
+        Returns:
+            `cfg.max_steps` if it is set, otherwise the number of steps needed
+            to cover `cfg.max_steps_lap_factor` laps at `cfg.target_speed`.
+        """
+        if self.cfg.max_steps is not None:
+            return int(self.cfg.max_steps)
+
+        reference_lap = self.track.lap_length / self.cfg.target_speed
+        return int(np.ceil(self.cfg.max_steps_lap_factor * reference_lap / self.cfg.dt))
 
     def _create_observation_space(self) -> spaces.Box:
         """
@@ -1017,7 +1043,7 @@ class RacingEnv(gym.Env):
         if self.lap_completed:
             terminated = True
             self.termination_stats["lap_completed"] += 1
-        elif self.step_count >= self.cfg.max_steps:
+        elif self.step_count >= self.max_steps:
             truncated = True
             self.termination_stats["max_steps"] += 1
 
@@ -1098,7 +1124,7 @@ class RacingEnv(gym.Env):
 
         if self.lap_completed:
             reason = "lap_completed"
-        elif self.step_count >= self.cfg.max_steps:
+        elif self.step_count >= self.max_steps:
             reason = "max_steps"
         else:
             reason = "wheel_violation"

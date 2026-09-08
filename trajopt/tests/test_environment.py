@@ -68,6 +68,38 @@ def test_rlconfig_is_reachable_from_a_config_dict():
     assert cfg.dt == RLConfig().dt  # untouched fields keep their defaults
 
 
+def test_the_episode_budget_follows_the_lap_length(track, vehicle_spec):
+    """A step budget tuned on one track truncates every longer one.
+
+    1500 steps is three laps of the 607 m sample oval and a third of a lap of
+    Spa, so on the track library a fixed budget means the agent never reaches a
+    checkpoint, let alone a lap.
+    """
+    from utils.track_library import build_track
+
+    monza = build_track("monza", arc_step=4.0)
+
+    short = RacingEnv(track=track, veh_spec=vehicle_spec, enable_telemetry=False)
+    long = RacingEnv(track=monza, veh_spec=vehicle_spec, enable_telemetry=False)
+
+    assert long.max_steps / short.max_steps == pytest.approx(
+        monza.lap_length / track.lap_length, rel=0.01
+    )
+    # 3 laps of the sample oval at the target speed is the old fixed 1500.
+    assert short.max_steps == pytest.approx(1500, rel=0.05)
+
+
+def test_an_explicit_step_budget_still_wins(track, vehicle_spec):
+    """Pinning `max_steps` must override the track-relative default."""
+    env = RacingEnv(
+        track=track,
+        veh_spec=vehicle_spec,
+        cfg=RLConfig(max_steps=321),
+        enable_telemetry=False,
+    )
+    assert env.max_steps == 321
+
+
 def test_same_seed_gives_identical_rollouts(track, vehicle_spec):
     """Reproducibility: identical seeds must produce identical trajectories."""
     def rollout(seed: int) -> np.ndarray:

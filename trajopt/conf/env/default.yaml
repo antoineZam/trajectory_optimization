@@ -6,7 +6,14 @@
 
 # --- Simulation ---------------------------------------------------------------
 dt: 0.05          # Timestep in seconds
-max_steps: 1500   # A reference lap is ~540 steps (27 s); 1500 allows a slow lap
+
+# Episode step budget. `null` derives it from the track: a library of 1.9 km to
+# 7 km circuits has no single right answer in steps, only in laps. Pin an
+# integer to force one budget on every track.
+max_steps: null
+max_steps_lap_factor: 3.0   # laps of allowance at target_speed; on the 607 m
+                            # sample oval that is 1458 steps, the budget this
+                            # was originally tuned to.
 
 # --- Observation normalization constants --------------------------------------
 max_speed: 50.0               # m/s (~180 km/h)

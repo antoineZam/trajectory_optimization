@@ -89,7 +89,7 @@ def test_reference_lap_return_matches_the_documented_budget(env: RacingEnv):
 
     total = 0.0
     steps = 0
-    for _ in range(env.cfg.max_steps):
+    for _ in range(env.max_steps):
         _, reward, terminated, truncated, _ = env.step(controller.act(env.state))
         total += reward
         steps += 1
@@ -158,7 +158,7 @@ def test_reference_controller_recovers_from_random_starts(track, vehicle_spec):
     for seed in range(attempts):
         env.reset(seed=seed)
         start_speed = env.state.vx
-        for _ in range(env.cfg.max_steps):
+        for _ in range(env.max_steps):
             _, _, terminated, truncated, _ = env.step(controller.act(env.state))
             if terminated or truncated:
                 break

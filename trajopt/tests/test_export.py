@@ -45,7 +45,7 @@ def test_episode_results_survive_the_auto_reset():
 
     vec_env.reset()
     terminal_info = None
-    for _ in range(racing_env.cfg.max_steps):
+    for _ in range(racing_env.max_steps):
         action = controller.act(racing_env.state)
         _, _, dones, infos = vec_env.step(np.array([action]))
         if dones[0]:
@@ -80,7 +80,7 @@ def test_recorded_trajectory_excludes_the_reset_state():
 
     vec_env.reset()
     xs, ys, vs = [], [], []
-    for _ in range(racing_env.cfg.max_steps):
+    for _ in range(racing_env.max_steps):
         action = controller.act(racing_env.state)
         _, _, dones, _ = vec_env.step(np.array([action]))
         if dones[0]:
