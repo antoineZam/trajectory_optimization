@@ -40,7 +40,12 @@ off_track_penalty_scale: 0.2
 termination_penalty: -10.0
 
 # --- Checkpoint system --------------------------------------------------------
-num_checkpoints: 4
+# `null` places one checkpoint every `checkpoint_spacing` metres, so a 7 km
+# circuit gets its milestones as densely as the 607 m sample oval instead of
+# one every 1.75 km. Pin an integer to force the same count on every track.
+num_checkpoints: null
+checkpoint_spacing: 150.0   # metres; 150 m is the spacing 4 checkpoints give
+                            # on the sample oval, which the rewards were tuned on
 
 # --- Termination --------------------------------------------------------------
 wheels_required_inside: 2   # Below this many wheels on track, the episode ends

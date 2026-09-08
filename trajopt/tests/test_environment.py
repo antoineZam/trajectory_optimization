@@ -89,6 +89,46 @@ def test_the_episode_budget_follows_the_lap_length(track, vehicle_spec):
     assert short.max_steps == pytest.approx(1500, rel=0.05)
 
 
+def test_checkpoint_spacing_is_what_stays_constant(track, vehicle_spec):
+    """Four checkpoints is 150 m apart on the oval and 1.75 km apart at Spa.
+
+    At gamma 0.995 the horizon is 10 s, some 250 m at the target speed, so a
+    milestone 1.75 km away is invisible from the previous one. Keeping the
+    spacing also keeps the milestone share of a lap's return at the third it
+    was tuned to, because the progress reward is paid per metre.
+    """
+    from utils.track_library import build_track
+
+    spa = build_track("spa_francorchamps", arc_step=4.0)
+
+    oval = RacingEnv(track=track, veh_spec=vehicle_spec, enable_telemetry=False)
+    long = RacingEnv(track=spa, veh_spec=vehicle_spec, enable_telemetry=False)
+
+    # Unchanged on the track the rewards were tuned on.
+    assert oval.num_checkpoints == 4
+    assert spa.lap_length / long.num_checkpoints == pytest.approx(150.0, rel=0.05)
+
+    # Checkpoints keep their share of a lap's return, whatever the length.
+    # (The one-off lap bonus does dilute on a long circuit -- it is a terminal
+    # event, worth what it is worth within gamma's horizon of the line.)
+    def checkpoint_share(env: RacingEnv) -> float:
+        checkpoints = env.num_checkpoints * env.cfg.checkpoint_bonus
+        progress = env.track.lap_length * env.cfg.progress_reward_scale
+        return checkpoints / (checkpoints + progress)
+
+    assert checkpoint_share(long) == pytest.approx(checkpoint_share(oval), abs=0.02)
+
+
+def test_an_explicit_checkpoint_count_still_wins(track, vehicle_spec):
+    env = RacingEnv(
+        track=track,
+        veh_spec=vehicle_spec,
+        cfg=RLConfig(num_checkpoints=7),
+        enable_telemetry=False,
+    )
+    assert env.num_checkpoints == 7
+
+
 def test_an_explicit_step_budget_still_wins(track, vehicle_spec):
     """Pinning `max_steps` must override the track-relative default."""
     env = RacingEnv(
@@ -199,7 +239,7 @@ def test_a_full_lap_awards_all_checkpoints_and_completes(env: RacingEnv):
             break
 
     assert cumulative >= 1.0, "the reference controller failed to complete a lap"
-    assert len(env.checkpoints_hit) == env.cfg.num_checkpoints, (
+    assert len(env.checkpoints_hit) == env.num_checkpoints, (
         f"checkpoints hit: {sorted(env.checkpoints_hit)}"
     )
     assert env.lap_completed

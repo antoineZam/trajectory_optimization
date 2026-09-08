@@ -99,7 +99,7 @@ def test_reference_lap_return_matches_the_documented_budget(env: RacingEnv):
     assert env.lap_completed, "the reference lap did not complete"
 
     milestones = (
-        env.cfg.num_checkpoints * env.cfg.checkpoint_bonus + env.cfg.lap_completion_bonus
+        env.num_checkpoints * env.cfg.checkpoint_bonus + env.cfg.lap_completion_bonus
     )
     per_step = (total - milestones) / steps
 

@@ -584,7 +584,7 @@ def _export_best_lap(
             _record()
 
         print(f"  {track_name}: attempt {attempt + 1}/{attempts}: "
-              f"{checkpoints_hit}/{racing_env.cfg.num_checkpoints} checkpoints, "
+              f"{checkpoints_hit}/{racing_env.num_checkpoints} checkpoints, "
               f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} points")
 
         # Prefer a completed lap, then more checkpoints, then a faster run.
@@ -607,7 +607,7 @@ def _export_best_lap(
         print(
             f"  WARNING: no completed lap on {track_name} in {attempts} attempts. "
             f"Exporting the best run ({checkpoints_hit}/"
-            f"{racing_env.cfg.num_checkpoints} checkpoints, {len(xs)} points). "
+            f"{racing_env.num_checkpoints} checkpoints, {len(xs)} points). "
             "This is NOT an optimal racing line -- treat it as a diagnostic trace."
         )
 

@@ -56,7 +56,7 @@ def test_episode_results_survive_the_auto_reset():
 
     # The lap did happen, and info is the only place that still says so.
     assert terminal_info["lap_completed"] is True
-    assert terminal_info["checkpoints_hit"] == racing_env.cfg.num_checkpoints
+    assert terminal_info["checkpoints_hit"] == racing_env.num_checkpoints
 
     # The env has been auto-reset: reading it here is what produced 0/4.
     assert racing_env.checkpoints_hit == set()

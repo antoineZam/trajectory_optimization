@@ -87,15 +87,22 @@ class RLConfig:
     centerline_reward_scale: float = 0.02  # Edge-proximity penalty scale
 
     # Milestone rewards: ~37% of a completed lap's return
-    checkpoint_bonus: float = 5.0  # Per checkpoint (4 x 5 = 20 per lap)
+    checkpoint_bonus: float = 5.0  # Per checkpoint, one every checkpoint_spacing
     lap_completion_bonus: float = 15.0  # For completing a lap
 
     # Penalties
     off_track_penalty_scale: float = 0.2  # Per-step penalty when off track
     termination_penalty: float = -10.0  # One-time penalty on termination
 
-    # Checkpoint system
-    num_checkpoints: int = 4
+    # Checkpoint system. None keeps the checkpoint *spacing* constant across
+    # tracks rather than the count: 4 checkpoints is one every 150 m on the
+    # sample oval and one every 1.75 km at Spa, which at gamma 0.995 (a 10 s
+    # horizon, 250 m at the target speed) is a milestone the agent cannot see
+    # from the previous one. Constant spacing also keeps the milestone share of
+    # the return at the ~1/3 it was tuned to, since the progress reward is paid
+    # per metre.
+    num_checkpoints: int | None = None
+    checkpoint_spacing: float = 150.0  # metres, when num_checkpoints is None
 
     # Wheels that must stay inside the track; below this the episode ends.
     wheels_required_inside: int = 2
@@ -190,10 +197,11 @@ class RacingEnv(gym.Env):
         self.track = self.tracks[0]
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
-        # Resolved episode budget: `cfg.max_steps` when it is set, otherwise
-        # this track's share of it. Read this, not `cfg.max_steps`, which may
-        # be None.
+        # Resolved per-track quantities: the config may leave either of them
+        # to the track length, so read these and not their `cfg` counterparts,
+        # which may be None.
         self.max_steps = self._resolve_max_steps()
+        self.num_checkpoints = self._resolve_num_checkpoints()
 
         self.telemetry = RacingTelemetry() if enable_telemetry else None
 
@@ -259,6 +267,18 @@ class RacingEnv(gym.Env):
 
         reference_lap = self.track.lap_length / self.cfg.target_speed
         return int(np.ceil(self.cfg.max_steps_lap_factor * reference_lap / self.cfg.dt))
+
+    def _resolve_num_checkpoints(self) -> int:
+        """Number of checkpoints around the current track.
+
+        Returns:
+            `cfg.num_checkpoints` if it is set, otherwise one checkpoint every
+            `cfg.checkpoint_spacing` metres, and never fewer than four.
+        """
+        if self.cfg.num_checkpoints is not None:
+            return int(self.cfg.num_checkpoints)
+
+        return max(4, int(round(self.track.lap_length / self.cfg.checkpoint_spacing)))
 
     def _create_observation_space(self) -> spaces.Box:
         """
@@ -719,6 +739,7 @@ class RacingEnv(gym.Env):
         if len(self.tracks) > 1:
             self.track = self.tracks[int(self.np_random.integers(len(self.tracks)))]
             self.max_steps = self._resolve_max_steps()
+            self.num_checkpoints = self._resolve_num_checkpoints()
 
         # Update statistics
         self.termination_stats["total_episodes"] += 1
@@ -874,7 +895,8 @@ class RacingEnv(gym.Env):
     def _check_checkpoint(self) -> bool:
         """Award the next checkpoint if cumulative progress has reached it.
 
-        Checkpoints are at 25%, 50%, 75% and 100% of a lap (1-indexed).
+        Checkpoints are spread evenly around the lap, the last one on the line
+        (1-indexed), and there are `num_checkpoints` of them.
 
         This previously divided the RAW progress signal by 1/num_checkpoints.
         Raw progress is in [0, 1), so int() capped the id at num_checkpoints-1
@@ -884,8 +906,8 @@ class RacingEnv(gym.Env):
         wrapped back towards 0 the id dropped while current_checkpoint stayed
         at 3, so no further checkpoint was ever awarded on later laps either.
         """
-        reached = int(self.cumulative_progress * self.cfg.num_checkpoints)
-        checkpoint_id = min(reached, self.cfg.num_checkpoints)
+        reached = int(self.cumulative_progress * self.num_checkpoints)
+        checkpoint_id = min(reached, self.num_checkpoints)
 
         if (
             checkpoint_id > 0
@@ -995,7 +1017,7 @@ class RacingEnv(gym.Env):
             if self.telemetry:
                 print(
                     f"CHECKPOINT {len(self.checkpoints_hit)}"
-                    f"/{self.cfg.num_checkpoints}"
+                    f"/{self.num_checkpoints}"
                     f" HIT! (+{checkpoint_reward:.0f})"
                 )
 
