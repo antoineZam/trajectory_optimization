@@ -164,8 +164,9 @@ class RacingEnv(gym.Env):
     LOOKAHEAD_SPACING_M = (20.0, 50.0, 80.0, 100.0)
 
     # Half-width, in centerline indices, of the local closest-point search.
-    # 64 indices is ~19 m at the default arc step, against a worst-case 2.5 m
-    # of travel per step -- wide enough that the global fallback is rare.
+    # 64 indices is 19 m on the sample oval and 64 m on a library track sampled
+    # every metre, against a worst-case 2.5 m of travel per step -- wide enough
+    # either way that the global fallback is rare.
     SEARCH_WINDOW = 64
 
     def __init__(

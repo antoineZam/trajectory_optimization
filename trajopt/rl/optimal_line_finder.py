@@ -217,7 +217,10 @@ def create_vec_env(
 
     Every worker gets the whole track set rather than one track each: with
     four workers and twelve circuits, a track per worker would train on a
-    third of the library and give each track a quarter of the batch.
+    third of the library and give each track a quarter of the batch. The cost
+    is that each worker holds every track's splines, boundaries and polygon --
+    a few MB per circuit at the default arc step, built lazily on the first
+    episode that draws it. Raise `arc_step` to trade accuracy for that memory.
 
     Args:
         track_paths: Path, or paths, to track JSON files.
