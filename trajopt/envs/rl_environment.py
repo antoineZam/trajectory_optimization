@@ -18,6 +18,7 @@ Action Space (3D):
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 
 import gymnasium as gym
@@ -162,7 +163,7 @@ class RacingEnv(gym.Env):
 
     def __init__(
         self,
-        track: Track,
+        track: Track | Sequence[Track],
         veh_spec: VehicleSpec,
         cfg: RLConfig | None = None,
         enable_telemetry: bool = True,
@@ -171,14 +172,22 @@ class RacingEnv(gym.Env):
         Initialize the racing environment.
 
         Args:
-            track: Track object containing centerline and boundaries.
+            track: The track to drive, or several tracks -- one is drawn at
+                every reset, so a policy is trained on a distribution of
+                circuits instead of memorising one. All of them must be
+                drivable by the same vehicle; nothing else is assumed.
             veh_spec: Vehicle specification with physical parameters.
             cfg: Environment configuration.
             enable_telemetry: Whether to collect detailed telemetry data.
         """
         super().__init__()
 
-        self.track = track
+        self.tracks: tuple[Track, ...] = (
+            (track,) if isinstance(track, Track) else tuple(track)
+        )
+        if not self.tracks:
+            raise ValueError("RacingEnv needs at least one track")
+        self.track = self.tracks[0]
         self.spec = veh_spec
         self.cfg = cfg or RLConfig()
         # Resolved episode budget: `cfg.max_steps` when it is set, otherwise
@@ -704,6 +713,12 @@ class RacingEnv(gym.Env):
     ) -> tuple[np.ndarray, dict]:
         """Reset the environment to start a new episode."""
         super().reset(seed=seed)
+
+        # Draw this episode's circuit. The step budget goes with it: it is a
+        # number of laps, and the tracks differ in length by a factor of four.
+        if len(self.tracks) > 1:
+            self.track = self.tracks[int(self.np_random.integers(len(self.tracks)))]
+            self.max_steps = self._resolve_max_steps()
 
         # Update statistics
         self.termination_stats["total_episodes"] += 1

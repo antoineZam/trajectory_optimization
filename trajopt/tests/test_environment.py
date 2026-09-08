@@ -100,6 +100,35 @@ def test_an_explicit_step_budget_still_wins(track, vehicle_spec):
     assert env.max_steps == 321
 
 
+def test_several_tracks_are_drawn_across_episodes(track, vehicle_spec):
+    """Given a set of circuits, each episode must run on one drawn from it.
+
+    Training on a single track produces a policy that has memorised it. The
+    library exists to be sampled, which only works if reset() actually moves
+    between its tracks -- and takes the step budget with it, since the tracks
+    differ in length by a factor of four.
+    """
+    from utils.track_library import build_track
+
+    tracks = [track, build_track("brands_hatch_indy", arc_step=4.0)]
+    env = RacingEnv(track=tracks, veh_spec=vehicle_spec, enable_telemetry=False)
+
+    seen = set()
+    for episode in range(20):
+        env.reset(seed=episode)
+        seen.add(env.track.name)
+        assert env.max_steps == pytest.approx(
+            3.0 * env.track.lap_length / env.cfg.target_speed / env.cfg.dt, abs=1
+        )
+
+    assert seen == {t.name for t in tracks}
+
+
+def test_an_empty_track_set_is_rejected(vehicle_spec):
+    with pytest.raises(ValueError, match="at least one track"):
+        RacingEnv(track=[], veh_spec=vehicle_spec, enable_telemetry=False)
+
+
 def test_same_seed_gives_identical_rollouts(track, vehicle_spec):
     """Reproducibility: identical seeds must produce identical trajectories."""
     def rollout(seed: int) -> np.ndarray:
