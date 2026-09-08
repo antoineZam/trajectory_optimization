@@ -43,7 +43,13 @@ DEFAULT_N_ENVS = min(mp.cpu_count(), 8)
 DEFAULT_ARC_STEP = 1.0
 
 # Evaluation laps attempted per track before exporting the best one.
-EXPORT_ATTEMPTS = 10
+#
+# One is enough as things stand: the export forces `randomize_reset` off and
+# asks the policy for deterministic actions, so every attempt replays the same
+# lap -- ten attempts on twelve circuits printed twelve groups of ten identical
+# lines and cost ten times the evaluation. Raise it only alongside a source of
+# variation, such as a randomised start.
+EXPORT_ATTEMPTS = 1
 
 
 @dataclass
@@ -583,7 +589,7 @@ def _export_best_lap(
 
             _record()
 
-        print(f"  {track_name}: attempt {attempt + 1}/{attempts}: "
+        print(f"  {track_name}: lap {attempt + 1}/{attempts}: "
               f"{checkpoints_hit}/{racing_env.num_checkpoints} checkpoints, "
               f"{'LAP COMPLETED!' if lap_completed else 'incomplete'}, {len(xs)} points")
 
@@ -605,7 +611,7 @@ def _export_best_lap(
     xs, ys, vs, lap_completed, checkpoints_hit = best_trajectory
     if not lap_completed:
         print(
-            f"  WARNING: no completed lap on {track_name} in {attempts} attempts. "
+            f"  WARNING: no completed lap on {track_name} in {attempts} attempt(s). "
             f"Exporting the best run ({checkpoints_hit}/"
             f"{racing_env.num_checkpoints} checkpoints, {len(xs)} points). "
             "This is NOT an optimal racing line -- treat it as a diagnostic trace."
