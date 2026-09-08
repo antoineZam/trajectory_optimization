@@ -1,4 +1,22 @@
 # Default file paths configuration
-track: data/tracks/sample_track.json
-optimal_trajectory: data/optimal_traj.npy
 
+# Reference circuit: what `mode=simulate` plots, and the only training track
+# when `tracks` is null.
+track: data/tracks/sample_track.json
+
+# Where the generated track library lives. The JSON files are a build product
+# of utils/track_library.py, regenerated on demand:
+#   poetry run python -m utils.track_library --out data/tracks
+track_dir: data/tracks
+
+# Training set. One of:
+#   library                     every circuit in utils/track_library
+#   <tag>                       a library tag: easy, medium, hard, oval,
+#                               street, chicane, hairpin, high-speed, ...
+#   [monza, spa_francorchamps]  layout names, or paths to track JSON files
+#   null                        train on `track` alone
+tracks: library
+
+# Exported racing line. A single-track run writes this file; a multi-track run
+# writes one <stem>_<track>.npy per circuit next to it.
+optimal_trajectory: data/optimal_traj.npy

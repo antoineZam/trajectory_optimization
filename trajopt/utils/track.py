@@ -268,12 +268,41 @@ def save_track_json(track: Track, path: str) -> None:
 
 
 
-def load_track_json(path: str, interpolation_resolution: int = 2000) -> Track:
+def resolution_for_arc_step(
+    centerline: np.ndarray, arc_step: float, minimum: int = 500
+) -> int:
+    """Sample count that puts interpolated centerline points `arc_step` apart.
+
+    `interpolation_resolution` is a point count, so it only fixes the spatial
+    resolution for one track length: 2000 samples is 0.3 m on the 607 m sample
+    oval and 3.5 m on a 7 km circuit. Since the closest-centerline lookup is
+    what the lateral offset and the boundary distances in the reward are
+    measured against, 3.5 m of granularity is a third of a car width of error.
+
+    Args:
+        centerline: Control points of the closed centerline, shape (N, 2).
+        arc_step: Wanted distance in metres between interpolated samples.
+        minimum: Floor on the returned count, for very short tracks.
+
+    Returns:
+        Number of interpolated samples.
+    """
+    closed = np.vstack([centerline, centerline[:1]])
+    length = float(np.sum(np.linalg.norm(np.diff(closed, axis=0), axis=1)))
+    return max(minimum, int(round(length / arc_step)))
+
+
+def load_track_json(
+    path: str, interpolation_resolution: int | None = 2000, arc_step: float = 1.0
+) -> Track:
     """Load and validate track from JSON file.
 
     Args:
         path: Path to track JSON file.
-        interpolation_resolution: Resolution for track interpolation.
+        interpolation_resolution: Resolution for track interpolation, or None
+            to derive it from the track length and `arc_step`.
+        arc_step: Wanted metres between centerline samples, used only when
+            `interpolation_resolution` is None.
 
     Returns:
         Validated Track instance.
@@ -287,9 +316,13 @@ def load_track_json(path: str, interpolation_resolution: int = 2000) -> Track:
     # Validate data with Pydantic schema
     validated = validate_track_data(data)
 
+    centerline = np.array(validated.centerline, dtype=float)
+    if interpolation_resolution is None:
+        interpolation_resolution = resolution_for_arc_step(centerline, arc_step)
+
     return Track(
         name=validated.name,
         width=validated.width,
-        centerline=np.array(validated.centerline, dtype=float),
+        centerline=centerline,
         interpolation_resolution=interpolation_resolution,
     )

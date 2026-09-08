@@ -24,7 +24,7 @@ def _vec_env():
 
     return DummyVecEnv([
         make_env_factory(
-            track_path=str(TRACK_PATH),
+            track_paths=str(TRACK_PATH),
             vehicle_cfg=vehicle_cfg,
             enable_telemetry=False,
             seed=0,

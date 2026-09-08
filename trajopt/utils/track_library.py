@@ -34,7 +34,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from utils.track import Track, save_track_json
+from utils.track import Track, resolution_for_arc_step, save_track_json
 from utils.track_builder import Corner, Layout, Straight, build_centerline
 
 # =============================================================================
@@ -518,12 +518,12 @@ def build_track(name: str, arc_step: float = DEFAULT_ARC_STEP) -> Track:
         The track, ready to drive.
     """
     layout = get_layout(name)
-    centerline, report = build_centerline(layout)
+    centerline, _ = build_centerline(layout)
     return Track(
         name=layout.name,
         centerline=centerline,
         width=layout.width,
-        interpolation_resolution=max(500, int(round(report.lap_length / arc_step))),
+        interpolation_resolution=resolution_for_arc_step(centerline, arc_step),
     )
 
 
