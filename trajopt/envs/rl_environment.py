@@ -520,8 +520,11 @@ class RacingEnv(gym.Env):
             slip_angle = 0.0
         slip_angle_normalized = np.clip(slip_angle / (np.pi / 4), -1.0, 1.0)  # ±45° range
 
-        # Current steering angle (from previous command, normalized)
-        steering_angle_normalized = self.prev_steer  # Already [-1, 1]
+        # Note: steering_angle_normalized is computed further down, from the
+        # speed-limited angle actually applied rather than from the raw
+        # command. It used to be assigned here as `self.prev_steer` first and
+        # then overwritten unread, which reads as if the raw command were the
+        # observed value.
 
         # =====================================================================
         # Track Position (5D)
