@@ -74,6 +74,11 @@ class Layout:
         width: Uniform track width in metres.
         segments: The lap, as straights and corners in driving order.
         inspiration: The real circuit this reconstructs.
+        reference_length: Lap length the layout is meant to have, in metres --
+            the published length of the real circuit, or the design length of
+            an original layout. Kept next to the segments so that a
+            reconstruction which has drifted away from the dimensions it claims
+            can be caught by a test.
         tags: Free-form labels used to select subsets for training.
     """
 
@@ -81,6 +86,7 @@ class Layout:
     width: float
     segments: tuple[Segment, ...]
     inspiration: str = ""
+    reference_length: float = 0.0
     tags: tuple[str, ...] = field(default_factory=tuple)
 
     @property
