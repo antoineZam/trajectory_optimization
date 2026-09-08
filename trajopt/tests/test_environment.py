@@ -356,3 +356,29 @@ def test_randomized_resets_keep_the_index_search_exact(track, vehicle_spec):
         pos = np.array([env.state.x, env.state.y])
         expected = int(np.argmin(np.sum((centerline - pos) ** 2, axis=1)))
         assert env._cached_track_state["closest_idx"] == expected, seed
+
+
+def test_wheels_are_counted_once_per_step(track, vehicle_spec, monkeypatch):
+    """Termination and telemetry must share one wheel count.
+
+    Counting wheels is four Shapely point-in-polygon tests, ~16% of the step
+    budget. Termination did it, then telemetry did it again -- eight tests per
+    step on the telemetry-enabled worker, for one unchanged vehicle pose.
+    """
+    env = RacingEnv(track=track, veh_spec=vehicle_spec, enable_telemetry=True)
+    env.reset(seed=0)
+
+    calls = 0
+    original = env._count_wheels_inside_track
+
+    def counting():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(env, "_count_wheels_inside_track", counting)
+
+    for _ in range(15):
+        env.step(np.array([0.4, 0.0, 0.05], dtype=np.float32))
+
+    assert calls == 15, f"expected one count per step, got {calls}"

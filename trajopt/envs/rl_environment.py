@@ -761,8 +761,11 @@ class RacingEnv(gym.Env):
         # Compute reward
         reward = self._compute_reward(track_state, checkpoint_hit, progress_delta)
 
-        # Check termination conditions
-        terminated, truncated = self._check_termination(track_state)
+        # Check termination conditions. The wheel count is four
+        # point-in-polygon tests, so it is done once here and shared with
+        # telemetry rather than computed by each.
+        wheels_inside = self._count_wheels_inside_track()
+        terminated, truncated = self._check_termination(track_state, wheels_inside)
 
         # Apply termination penalty (only for bad terminations, not lap completion)
         if terminated and not self.lap_completed:
@@ -773,7 +776,7 @@ class RacingEnv(gym.Env):
             self._log_telemetry(
                 track_state, throttle, brake,
                 steer_command, steer_angle,
-                reward, checkpoint_hit,
+                reward, checkpoint_hit, wheels_inside,
             )
             if terminated or truncated:
                 self._end_episode_telemetry()
@@ -969,9 +972,17 @@ class RacingEnv(gym.Env):
 
         return reward
 
-    def _check_termination(self, track_state: dict) -> tuple[bool, bool]:
+    def _check_termination(
+        self, track_state: dict, wheels_inside: int | None = None
+    ) -> tuple[bool, bool]:
         """
         Check if the episode should end.
+
+        Args:
+            track_state: Track state for the current position.
+            wheels_inside: Wheels inside the track, if already counted this
+                step. Counting them is four point-in-polygon tests, so step()
+                does it once and passes the result here and to telemetry.
 
         Returns:
             Tuple of (terminated, truncated).
@@ -982,8 +993,8 @@ class RacingEnv(gym.Env):
         center_dist = track_state["center_dist"]
         half_width = self.track.width / 2.0
 
-        # Count wheels inside track
-        wheels_inside = self._count_wheels_inside_track()
+        if wheels_inside is None:
+            wheels_inside = self._count_wheels_inside_track()
 
         # Leaving the track ends the episode
         if wheels_inside < self.cfg.wheels_required_inside:
@@ -1033,10 +1044,14 @@ class RacingEnv(gym.Env):
         steer_angle: float,
         reward: float,
         checkpoint_hit: bool,
+        wheels_inside: int | None = None,
     ) -> None:
         """Log telemetry data for the current step."""
         if not self.telemetry:
             return
+
+        if wheels_inside is None:
+            wheels_inside = self._count_wheels_inside_track()
 
         speed = np.hypot(self.state.vx, self.state.vy)
         max_steer_allowed = get_max_steering_angle(self.spec, speed)
@@ -1059,7 +1074,7 @@ class RacingEnv(gym.Env):
             track_progress=track_state["track_progress"],
             center_distance=track_state["center_dist"],
             racing_line_distance=track_state["center_dist"],
-            wheels_inside=self._count_wheels_inside_track(),
+            wheels_inside=wheels_inside,
             current_checkpoint=len(self.checkpoints_hit),
             total_reward=reward,
             track_reward=0.0,  # Simplified reward structure
