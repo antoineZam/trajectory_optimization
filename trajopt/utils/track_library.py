@@ -3,12 +3,13 @@
 Every layout here is a *schematic reconstruction* of a real circuit: the
 sequence of corners, their radii, their direction and the length of the
 straights between them are drawn from the published geometry, so the driving
-problem is the real one -- a 10 m radius hairpin after a short braking zone at
-Monaco, a 1.1 km straight into a 28 m radius chicane at Monza. The plan view is
-close but not survey-accurate, and the closure correction in `track_builder`
-opens or tightens every corner of a layout by a few percent to make the lap
-close. Treat these as circuits *in the character of* their inspiration, not as
-substitutes for surveyed track data.
+problem is the real one -- a 1.1 km straight into a 28 m radius chicane at
+Monza, a 14 m radius hairpin at the top of the hill at Brands Hatch. Lap
+lengths land within a percent of the published figures, but the plan view is
+close rather than survey-accurate: the numbers were fitted to close the loop
+exactly, which trades a few metres of straight for the guarantee that the
+circuit is a valid closed track. Treat these as circuits *in the character of*
+their inspiration, not as substitutes for surveyed track data.
 
 Three deliberate departures:
 
