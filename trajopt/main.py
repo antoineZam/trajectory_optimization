@@ -102,10 +102,16 @@ def resolve_training_tracks(cfg: DictConfig) -> list[str]:
             f"known layouts: {', '.join(LAYOUTS)}"
         )
     ensure_track_library(track_dir)
-    return [
+    paths = [
         name if name.endswith(".json") else str(Path(track_dir) / f"{name}.json")
         for name in names
     ]
+
+    # Fail on a mistyped path here rather than after the training banner.
+    absent = [path for path in paths if not Path(path).exists()]
+    if absent:
+        raise FileNotFoundError(f"track file(s) not found: {', '.join(absent)}")
+    return paths
 
 
 def mode_optimize(cfg: DictConfig) -> None:

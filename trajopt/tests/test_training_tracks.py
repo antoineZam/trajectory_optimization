@@ -80,6 +80,12 @@ def test_an_unknown_layout_name_is_rejected(tmp_path):
         resolve_training_tracks(_cfg(tmp_path, tracks=["monza", "nurburgring"]))
 
 
+def test_a_mistyped_track_file_fails_before_training(tmp_path):
+    """A typo in a path must not surface after the training banner."""
+    with pytest.raises(FileNotFoundError, match="not found"):
+        resolve_training_tracks(_cfg(tmp_path, tracks=["data/tracks/typo.json"]))
+
+
 def test_one_track_writes_the_configured_path():
     """`mode=simulate` reads the configured path, so it must stay exact."""
     destination = _trajectory_path("data/optimal_traj.npy", "monza", single=True)
