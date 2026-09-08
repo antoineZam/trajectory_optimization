@@ -257,3 +257,44 @@ def test_training_and_evaluation_see_the_same_track(track, vehicle_spec):
         env._compute_track_state(np.array([1e5, 1e5]))
     )
     assert terminated, "a vehicle far off track must terminate the episode"
+
+
+def test_track_state_is_computed_once_per_step(env: RacingEnv, monkeypatch):
+    """step() and _get_obs() must share one track-state computation.
+
+    Finding the closest centerline point is the most expensive part of a step.
+    step() computed it, then _get_obs() recomputed it for the same position
+    and overwrote the cache -- exactly twice the necessary work, every step.
+    """
+    env.reset(seed=0)
+
+    calls: list[tuple[float, float]] = []
+    original = env._compute_track_state
+
+    def counting(position):
+        calls.append((float(position[0]), float(position[1])))
+        return original(position)
+
+    monkeypatch.setattr(env, "_compute_track_state", counting)
+
+    for _ in range(20):
+        env.step(np.array([0.4, 0.0, 0.05], dtype=np.float32))
+
+    assert len(calls) == 20, f"expected one computation per step, got {len(calls)}"
+
+
+def test_reset_invalidates_the_track_state_cache(env: RacingEnv):
+    """A new episode must not read the previous episode's cached track state."""
+    env.reset(seed=0)
+    for _ in range(10):
+        env.step(np.array([0.6, 0.0, 0.3], dtype=np.float32))
+
+    stale = env._cached_track_state
+    assert stale is not None
+
+    env.reset(seed=1)
+    fresh = env._cached_track_state
+    assert fresh is not stale, "the cache survived reset()"
+    np.testing.assert_allclose(
+        fresh["position"], [env.state.x, env.state.y], atol=1e-9
+    )
