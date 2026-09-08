@@ -146,6 +146,11 @@ class RacingEnv(gym.Env):
     # Distances ahead, in METERS of arc length along the centerline
     LOOKAHEAD_SPACING_M = (20.0, 50.0, 80.0, 100.0)
 
+    # Half-width, in centerline indices, of the local closest-point search.
+    # 64 indices is ~19 m at the default arc step, against a worst-case 2.5 m
+    # of travel per step -- wide enough that the global fallback is rare.
+    SEARCH_WINDOW = 64
+
     def __init__(
         self,
         track: Track,
@@ -207,6 +212,8 @@ class RacingEnv(gym.Env):
 
         # Track state caching (computed once per step for efficiency)
         self._cached_track_state: dict | None = None
+        # Seed for the local closest-point search; None forces a global one.
+        self._last_closest_idx: int | None = None
 
         # Statistics
         self.termination_stats = {
@@ -286,6 +293,60 @@ class RacingEnv(gym.Env):
     # Track State Computation
     # =========================================================================
 
+    def _closest_centerline_index(self, position: np.ndarray) -> int:
+        """Index of the closest interpolated centerline sample to `position`.
+
+        The vehicle moves at most `max_speed * dt` per step -- 2.5 m at the
+        default 50 m/s and dt 0.05, about 8 samples at the default arc step --
+        so the answer is almost always a few indices from the previous one.
+        Searching a window around it is O(1) instead of a scan over all 2000
+        samples, which cost ~14% of the step budget.
+
+        The window is a shortcut, never a different answer. Two conditions
+        must both hold for its result to be accepted:
+
+        * the minimum is interior, not on an edge -- an edge minimum means the
+          true closest sample is probably just outside the window;
+        * the point is within one track width of the sample found. Distance to
+          a closed centerline has a local minimum against *every* branch of
+          the track, so a point far inside the infield of this oval sits in a
+          basin belonging to the far side. Such a minimum is interior and
+          looks perfectly valid, which is why the edge check alone is not
+          enough. On track the nearest branch is the only one within reach.
+
+        Anything else -- a reset teleport, a run off track, a diagnostic query
+        from anywhere -- falls back to the exact global search.
+
+        Args:
+            position: Vehicle position [x, y].
+
+        Returns:
+            Index into `track.interpolated_centerline`.
+        """
+        centerline = self.track.interpolated_centerline
+        n = len(centerline)
+        closest_idx = None
+
+        if self._last_closest_idx is not None and 2 * self.SEARCH_WINDOW + 1 < n:
+            offsets = (
+                np.arange(
+                    self._last_closest_idx - self.SEARCH_WINDOW,
+                    self._last_closest_idx + self.SEARCH_WINDOW + 1,
+                )
+                % n
+            )
+            distances_sq = np.sum((centerline[offsets] - position) ** 2, axis=1)
+            local = int(np.argmin(distances_sq))
+            interior = 0 < local < len(offsets) - 1
+            if interior and distances_sq[local] <= self.track.width ** 2:
+                closest_idx = int(offsets[local])
+
+        if closest_idx is None:
+            closest_idx = self.track.closest_index(position)
+
+        self._last_closest_idx = closest_idx
+        return closest_idx
+
     def _compute_track_state(self, position: np.ndarray) -> dict:
         """
         Compute all track-relative state information for the current position.
@@ -301,11 +362,9 @@ class RacingEnv(gym.Env):
         centerline = self.track.interpolated_centerline
 
         # Find closest point on centerline
-        diff = centerline - position
-        distances_sq = np.sum(diff ** 2, axis=1)
-        closest_idx = np.argmin(distances_sq)
+        closest_idx = self._closest_centerline_index(position)
         closest_point = centerline[closest_idx]
-        center_dist = np.sqrt(distances_sq[closest_idx])
+        center_dist = float(np.linalg.norm(position - closest_point))
 
         # Track progress (0 to 1)
         track_progress = closest_idx / len(centerline)
@@ -643,7 +702,10 @@ class RacingEnv(gym.Env):
 
         # Drop the previous episode's track state: the new position is
         # unrelated to it, and a stale cache entry would be read as a hit.
+        # The search seed goes with it -- a randomised start is nowhere near
+        # where the last episode ended.
         self._cached_track_state = None
+        self._last_closest_idx = None
 
         # Initialize vehicle
         self.state = self._sample_initial_state()

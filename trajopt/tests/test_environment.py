@@ -298,3 +298,61 @@ def test_reset_invalidates_the_track_state_cache(env: RacingEnv):
     np.testing.assert_allclose(
         fresh["position"], [env.state.x, env.state.y], atol=1e-9
     )
+
+
+def test_local_index_search_agrees_with_the_global_one(env: RacingEnv):
+    """The windowed closest-point search must never give a worse answer.
+
+    It is a shortcut, not an approximation. The invariant is the *distance*,
+    not the index: a query equidistant from two centerline samples has two
+    equally correct answers, and the K-D tree does not have to break that tie
+    the way argmin does.
+    """
+    centerline = env.track.interpolated_centerline
+
+    def assert_closest(position: np.ndarray) -> None:
+        position = np.asarray(position, dtype=float)
+        idx = env._closest_centerline_index(position)
+        found = float(np.linalg.norm(centerline[idx] - position))
+        best = float(np.min(np.linalg.norm(centerline - position, axis=1)))
+        assert found == pytest.approx(best, abs=1e-9), (
+            f"at {position}: index {idx} is {found:.4f} m away, "
+            f"but the closest sample is {best:.4f} m away"
+        )
+
+    env.reset(seed=0)
+
+    # A driven episode: consecutive positions, which is the fast path.
+    for _ in range(300):
+        env.step(np.array([0.8, 0.0, 0.15], dtype=np.float32))
+        assert_closest([env.state.x, env.state.y])
+
+    # Teleports the window cannot cover: the seam, the far side of the track,
+    # the middle of the infield (a point whose distance to a closed centerline
+    # has a local minimum against every branch), and a point far outside.
+    for pos in [
+        centerline[0],
+        centerline[-1],
+        centerline[len(centerline) // 2],
+        np.array([0.0, 0.0]),
+        np.array([200.0, -150.0]),
+        np.array([50.0, -0.5]),
+    ]:
+        assert_closest(pos)
+
+
+def test_randomized_resets_keep_the_index_search_exact(track, vehicle_spec):
+    """Every random start is a teleport; none may return a stale index."""
+    centerline = track.interpolated_centerline
+    env = RacingEnv(
+        track=track,
+        veh_spec=vehicle_spec,
+        cfg=RLConfig(randomize_reset=True),
+        enable_telemetry=False,
+    )
+
+    for seed in range(40):
+        env.reset(seed=seed)
+        pos = np.array([env.state.x, env.state.y])
+        expected = int(np.argmin(np.sum((centerline - pos) ** 2, axis=1)))
+        assert env._cached_track_state["closest_idx"] == expected, seed
