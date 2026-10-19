@@ -75,6 +75,29 @@ def test_a_spinning_car_cannot_speed_up(vehicle_spec: VehicleSpec, yaw_rate: flo
         assert speed <= 40.0, f"a coasting spin sped up to {speed:.2f} m/s"
 
 
+@pytest.mark.parametrize("steer", [-0.3, 0.3])
+def test_steering_cannot_feed_energy_into_a_car_rolling_backwards(
+    vehicle_spec: VehicleSpec, steer: float
+):
+    """Coasting backwards, the steered tyres can only take energy out.
+
+    Steering entered the front slip angle with the same sign whichever way
+    the car travelled, so in reverse the front tyre pushed along its own
+    slide: 20 m/s backwards with 0.3 rad of lock gained 2.5% of kinetic energy.
+    """
+    def kinetic_energy(s: VehicleState) -> float:
+        return 0.5 * (vehicle_spec.mass * (s.vx**2 + s.vy**2)
+                      + vehicle_spec.moi[2] * s.yaw_rate**2)
+
+    state = _state(vx=-20.0)
+    initial = kinetic_energy(state)
+    for _ in range(40):
+        state = step_dynamics(vehicle_spec, state, DT, 0.0, 0.0, steer)
+        assert kinetic_energy(state) <= initial, (
+            f"rolling backwards gained {kinetic_energy(state) / initial - 1.0:.2%} of energy"
+        )
+
+
 @pytest.mark.parametrize("steer_deg", [1.0, 2.0, 4.0])
 def test_steady_state_yaw_rate_matches_kinematic_model(
     vehicle_spec: VehicleSpec, steer_deg: float

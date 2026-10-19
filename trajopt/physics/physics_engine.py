@@ -398,8 +398,13 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # coefficient and makes the yaw mode exponentially DIVERGENT: with zero
     # steering, a 0.01 rad/s perturbation doubled every ~73 ms and ran into the
     # +/-20 rad/s safety clamp. The vehicle was not controllable by any policy.
+    #
+    # Rolling backwards, the steered wheel turns the other way relative to its
+    # travel, so steering enters with the sign of vx. With a fixed sign the
+    # front tyre pushed along its own slide and fed energy into the car.
     vx_safe = max(abs(s.vx), 1.0)
-    alpha_f = np.arctan2(s.vy + lf * s.yaw_rate, vx_safe) - steer
+    travel = np.copysign(1.0, s.vx)  # +1 forwards, -1 backwards
+    alpha_f = np.arctan2(s.vy + lf * s.yaw_rate, vx_safe) - travel * steer
     alpha_r = np.arctan2(s.vy - lr * s.yaw_rate, vx_safe)
 
     # Linear cornering stiffness with saturation at Fy_max.
