@@ -9,6 +9,7 @@ chassis:
   coefficient_portance:
     front: -1.2
     rear: -1.8
+  surface_frontale: 2.0
   repartition_masses:
     front: 0.53
     rear: 0.47
@@ -43,6 +44,7 @@ suspension_tires:
   modele_pneu_adherence:
     mu0: 1.6
     alpha: -0.08   # Negative: tires lose grip as load rises (~8% per doubling)
+  rayon_roue: 0.33
 
 brakes:
   couple_freinage_max: 9000

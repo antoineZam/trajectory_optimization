@@ -19,6 +19,7 @@ class VehicleSpec:
     Cx: float
     Cz_front: float
     Cz_rear: float
+    frontal_area: float # reference area of Cx and Cz (m^2)
     mass_split_front: float # 0..1
     # Vehicle dimensions for track boundary checking
     wheelbase: float # distance between front and rear axles (m)
@@ -40,6 +41,7 @@ class VehicleSpec:
     toe: float
     mu0: float # base friction coefficient
     alpha_muFz: float # mu = mu0 * (1 + alpha*(Fz-Ref)/Ref)
+    wheel_radius: float # rolling radius of the driven tyres (m)
     # Brakes
     brake_torque_max: float
     brake_split_front: float
@@ -72,6 +74,7 @@ class VehicleSpec:
             Cx=ch.coefficient_trainee,
             Cz_front=ch.coefficient_portance.front,
             Cz_rear=ch.coefficient_portance.rear,
+            frontal_area=ch.surface_frontale,
             mass_split_front=ch.repartition_masses.front,
             wheelbase=ch.empattement,
             track_width=ch.voie,
@@ -89,6 +92,7 @@ class VehicleSpec:
             toe=st.geometrie_pneus.pincement,
             mu0=st.modele_pneu_adherence.mu0,
             alpha_muFz=st.modele_pneu_adherence.alpha,
+            wheel_radius=st.rayon_roue,
             brake_torque_max=br.couple_freinage_max,
             brake_split_front=br.repartition_freinage.front,
         )
@@ -146,17 +150,14 @@ def interp_torque(torque_curve: np.ndarray, rpm: float) -> float:
     return float(np.interp(rpm, torque_curve[:,0], torque_curve[:,1]))
 
 
-def aero_forces(
-    spec: VehicleSpec,
-    v: float,
-    rho_air: float = 1.225,
-    area: float = 2.0,
-) -> tuple[float, float]:
+def aero_forces(spec: VehicleSpec, v: float, rho_air: float = 1.225) -> tuple[float, float]:
     """
     Drag ~ 0.5*rho*Cx*A*v^2 ; Downforce (front+rear) ~ 0.5*rho*Cz*A*v^2
     """
-    drag = 0.5 * rho_air * spec.Cx * area * v**2
-    downforce = 0.5 * rho_air * (abs(spec.Cz_front) + abs(spec.Cz_rear)) * area * v**2
+    drag = 0.5 * rho_air * spec.Cx * spec.frontal_area * v**2
+    downforce = (
+        0.5 * rho_air * (abs(spec.Cz_front) + abs(spec.Cz_rear)) * spec.frontal_area * v**2
+    )
     return drag, downforce
 
 
@@ -210,7 +211,6 @@ def _apply_friction_circle(
 def get_max_speed_for_gear(
     spec: VehicleSpec,
     gear: int,
-    wheel_radius: float = 0.33,
     absolute_top_speed: float = 88.0,
 ) -> float:
     """
@@ -219,7 +219,6 @@ def get_max_speed_for_gear(
     Args:
         spec: Vehicle specification with gear ratios and RPM limiter
         gear: Current gear (1-based)
-        wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s (default 88 m/s = 317 km/h)
 
     Returns:
@@ -236,7 +235,7 @@ def get_max_speed_for_gear(
     # RPM → rad/s → wheel speed → vehicle speed
     max_wheel_omega = spec.rpm_limiter / 9.5493  # RPM to rad/s
     max_wheel_speed = max_wheel_omega / total_ratio  # Account for gear reduction
-    max_vehicle_speed = max_wheel_speed * wheel_radius  # Linear speed
+    max_vehicle_speed = max_wheel_speed * spec.wheel_radius  # Linear speed
 
     # ENFORCE ABSOLUTE TOP SPEED LIMIT: No gear can exceed 88 m/s
     return min(max_vehicle_speed, absolute_top_speed)
@@ -244,7 +243,6 @@ def get_max_speed_for_gear(
 
 def get_gear_speed_limits(
     spec: VehicleSpec,
-    wheel_radius: float = 0.33,
     absolute_top_speed: float = 88.0,
 ) -> np.ndarray:
     """
@@ -252,13 +250,12 @@ def get_gear_speed_limits(
 
     Args:
         spec: Vehicle specification
-        wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s
 
     Returns:
         Array of max speeds for each gear [gear1_max, gear2_max, ...]
     """
-    return np.array([get_max_speed_for_gear(spec, gear+1, wheel_radius, absolute_top_speed)
+    return np.array([get_max_speed_for_gear(spec, gear+1, absolute_top_speed)
                      for gear in range(len(spec.gear_ratios))])
 
 
@@ -301,8 +298,7 @@ def get_max_steering_angle(spec: VehicleSpec, speed: float) -> float:
 
 
 def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
-                throttle: float, brake: float, steer: float,
-                wheel_radius: float = 0.33, CdA_area: float = 2.0) -> VehicleState:
+                throttle: float, brake: float, steer: float) -> VehicleState:
     # Clamp inputs
     throttle = float(np.clip(throttle, 0.0, 1.0))
     brake = float(np.clip(brake, 0.0, 1.0))
@@ -318,7 +314,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # (Debug code removed to reduce console noise)
 
     # Aéro
-    drag, downforce = aero_forces(spec, v, area=CdA_area)
+    drag, downforce = aero_forces(spec, v)
 
     # Répartition verticale (statique + aéro).
     # Downforce follows the aero balance, not a 50/50 split: the spec carries
@@ -344,19 +340,19 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # Propulsion : estimate wheel speed from gear
     gear = int(np.clip(s.gear, 1, len(spec.gear_ratios)))
     ratio = spec.gear_ratios[gear-1] * spec.final_drive
-    wheel_omega = (s.vx / max(wheel_radius,1e-3)) if v>0.1 else 0.0
+    wheel_omega = (s.vx / spec.wheel_radius) if v>0.1 else 0.0
     est_rpm = wheel_omega * ratio * 9.5493 # rad/s -> RPM
     rpm = np.clip(est_rpm, 800.0, spec.rpm_limiter)
     eng_torque = interp_torque(spec.torque_curve, rpm) * throttle
     wheel_torque = eng_torque * ratio * spec.driveline_eff
-    Fx_driven = wheel_torque / max(wheel_radius,1e-3)
+    Fx_driven = wheel_torque / spec.wheel_radius
 
     # Freinage. Brakes dissipate energy, so the force always OPPOSES motion --
     # it was previously subtracted unconditionally, which made braking at low
     # speed push the car backwards (measured: braking from 60 m/s drove vx to
     # 0.34 m/s and then through zero into reverse).
     brake_torque = brake * spec.brake_torque_max
-    Fx_brake_capacity = brake_torque / max(wheel_radius, 1e-3)
+    Fx_brake_capacity = brake_torque / spec.wheel_radius
 
     # Cap the brake impulse at what brings the car exactly to rest over this
     # step. Without it a deadband alone cannot help: full brakes give 18.8
@@ -450,7 +446,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # Gear-based speed limiting (88 m/s absolute cap)
     current_gear = int(np.clip(new_gear, 1, len(spec.gear_ratios)))
     max_speed_current_gear = get_max_speed_for_gear(
-        spec, current_gear, wheel_radius, absolute_top_speed=88.0,
+        spec, current_gear, absolute_top_speed=88.0,
     )
     speed_limit = max_speed_current_gear * 1.05
     current_speed = np.hypot(vx, vy)
@@ -460,7 +456,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         vx *= scale_factor
         vy *= scale_factor
 
-        wheel_omega = (vx / max(wheel_radius, 1e-3)) if current_speed > 0.1 else 0.0
+        wheel_omega = (vx / spec.wheel_radius) if current_speed > 0.1 else 0.0
         ratio = spec.gear_ratios[current_gear-1] * spec.final_drive
         rpm = np.clip(wheel_omega * ratio * 9.5493, 800.0, spec.rpm_limiter)
 
@@ -496,7 +492,6 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
 
 def get_gear_speed_info(
     spec: VehicleSpec,
-    wheel_radius: float = 0.33,
     absolute_top_speed: float = 88.0,
 ) -> dict:
     """
@@ -504,13 +499,12 @@ def get_gear_speed_info(
 
     Args:
         spec: Vehicle specification
-        wheel_radius: Wheel radius in meters
         absolute_top_speed: Absolute maximum speed limit in m/s
 
     Returns:
         Dictionary with gear speeds, RPM limits, and other drivetrain info
     """
-    speed_limits = get_gear_speed_limits(spec, wheel_radius, absolute_top_speed)
+    speed_limits = get_gear_speed_limits(spec, absolute_top_speed)
 
     gear_info = {}
     for gear in range(1, len(spec.gear_ratios) + 1):
@@ -531,7 +525,7 @@ def get_gear_speed_info(
         'gear_speeds': gear_info,
         'rpm_limiter': spec.rpm_limiter,
         'final_drive': spec.final_drive,
-        'wheel_radius': wheel_radius,
+        'wheel_radius': spec.wheel_radius,
         'absolute_top_speed_ms': absolute_top_speed,
         'absolute_top_speed_kmh': absolute_top_speed * 3.6,
         'top_speed_ms': min(max(speed_limits), absolute_top_speed),

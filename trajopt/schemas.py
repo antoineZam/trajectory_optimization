@@ -87,6 +87,9 @@ class ChassisSchema(BaseModel):
     )
     coefficient_trainee: Annotated[float, Field(ge=0, description="Drag coefficient (Cx)")]
     coefficient_portance: LiftCoefficients
+    surface_frontale: Annotated[
+        float, Field(gt=0, description="Frontal area in m², the reference area of Cx and Cz")
+    ]
     repartition_masses: MassDistribution
     empattement: Annotated[float, Field(gt=0, description="Wheelbase in meters")]
     voie: Annotated[float, Field(gt=0, description="Track width in meters")]
@@ -193,6 +196,9 @@ class SuspensionTiresSchema(BaseModel):
     raideur_suspension: SuspensionStiffness
     geometrie_pneus: TireGeometry
     modele_pneu_adherence: TireGripModel
+    rayon_roue: Annotated[
+        float, Field(gt=0, description="Rolling radius of the driven tyres in meters")
+    ]
 
     model_config = {"extra": "forbid"}
 
