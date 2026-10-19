@@ -235,6 +235,27 @@ def get_max_speed_for_gear(spec: VehicleSpec, gear: int) -> float:
     return max_wheel_speed * spec.wheel_radius  # Linear speed
 
 
+def best_gear(spec: VehicleSpec, speed: float) -> int:
+    """The gear that puts the most torque on the road at a given speed.
+
+    That is the gear a driver holds on a flat-out exit. A gear at or past the
+    limiter gives nothing, and when every gear is past it the top one is kept.
+
+    Args:
+        spec: Vehicle specification
+        speed: Longitudinal speed (m/s)
+
+    Returns:
+        Gear number (1-based)
+    """
+    ratios = spec.gear_ratios * spec.final_drive
+    rpm = speed / spec.wheel_radius * ratios * 9.5493  # rad/s -> RPM
+    wheel_torque = np.interp(rpm, spec.torque_curve[:, 0], spec.torque_curve[:, 1]) * ratios
+    wheel_torque[rpm >= spec.rpm_limiter] = 0.0
+    # Scanned from the top gear down, so a tie goes to the longer ratio.
+    return len(ratios) - int(np.argmax(wheel_torque[::-1]))
+
+
 def get_gear_speed_limits(spec: VehicleSpec) -> np.ndarray:
     """
     Calculate speed limits for all gears.
@@ -429,14 +450,10 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     x = s.x + dt * (vx * np.cos(yaw) - vy * np.sin(yaw))
     y = s.y + dt * (vx * np.sin(yaw) + vy * np.cos(yaw))
 
-    # Auto gearbox
-    upshift_rpm = 0.92 * spec.rpm_limiter
-    downshift_rpm = 2000.0
-    new_gear = gear
-    if rpm > upshift_rpm and gear < len(spec.gear_ratios):
-        new_gear += 1
-    elif rpm < downshift_rpm and gear > 1:
-        new_gear -= 1
+    # Auto gearbox. It used to shift down only below 2000 rpm, so the car left
+    # a slow corner in a gear far too long: braking from 80 to 19 m/s ended in
+    # 4th, with a quarter of the drive 1st would have given.
+    new_gear = best_gear(spec, vx)
 
     # Safety clamps. These are diagnostics, not part of the model: if one
     # engages, the simulation has entered a regime the tire model does not

@@ -7,6 +7,8 @@ them fails the suite until the marker is removed (Phase 3).
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -282,12 +284,34 @@ def test_rev_limiter_cuts_the_engine_not_the_speed(vehicle_spec: VehicleSpec):
             )
 
 
+def test_gearbox_exits_a_slow_corner_in_its_strongest_gear(vehicle_spec: VehicleSpec):
+    """After braking for a slow corner, no other gear may accelerate harder.
+
+    Downshifts used to wait for 2000 rpm, so braking from 80 to 19 m/s ended
+    in 4th, with a quarter of the drive 1st would have given.
+    """
+    state = _state(vx=80.0, gear=len(vehicle_spec.gear_ratios))
+    while state.vx > 20.0:
+        state = step_dynamics(vehicle_spec, state, DT, 0.0, 1.0, 0.0)
+
+    def gain(gear: int) -> float:
+        after = step_dynamics(vehicle_spec, replace(state, gear=gear), DT, 1.0, 0.0, 0.0)
+        return after.vx - state.vx
+
+    strongest = max(gain(g) for g in range(1, len(vehicle_spec.gear_ratios) + 1))
+    assert gain(state.gear) == pytest.approx(strongest), (
+        f"left the corner in gear {state.gear}: {gain(state.gear):.3f} m/s per step "
+        f"against {strongest:.3f} available"
+    )
+
+
 def test_gearbox_does_not_hunt(vehicle_spec: VehicleSpec):
     """Holding a steady speed must not oscillate between gears.
 
-    The gearbox shifts at most one gear per step with no shift time, which
-    could in principle hunt around a threshold. Measured worst case is 0.15
-    changes/s, so it does not -- this pins that.
+    The gearbox picks the gear with the most wheel torque at the current
+    speed, with no hysteresis and no shift time, which could in principle hunt
+    around a crossover. Measured worst case is 0.15 changes/s, so it does not
+    -- this pins that.
 
     What is still missing is shift duration and the torque cut that goes with
     it. That needs a shift timer in VehicleState, i.e. hidden state the agent
