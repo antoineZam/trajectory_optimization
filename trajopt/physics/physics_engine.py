@@ -210,24 +210,19 @@ def _apply_friction_circle(
     return Fx * scale, Fy * scale
 
 
-def get_max_speed_for_gear(
-    spec: VehicleSpec,
-    gear: int,
-    absolute_top_speed: float = 88.0,
-) -> float:
+def get_max_speed_for_gear(spec: VehicleSpec, gear: int) -> float:
     """
-    Calculate maximum realistic speed for a given gear based on RPM limiter.
+    Calculate the speed at which a given gear reaches the RPM limiter.
 
     Args:
         spec: Vehicle specification with gear ratios and RPM limiter
         gear: Current gear (1-based)
-        absolute_top_speed: Absolute maximum speed limit in m/s (default 88 m/s = 317 km/h)
 
     Returns:
-        Maximum speed in m/s for this gear, capped at absolute_top_speed
+        Maximum speed in m/s for this gear
     """
     if gear < 1 or gear > len(spec.gear_ratios):
-        return min(50.0, absolute_top_speed)  # Fallback speed limit
+        return 50.0  # Fallback speed limit
 
     # Get gear ratio and final drive
     gear_ratio = spec.gear_ratios[gear-1]
@@ -237,27 +232,20 @@ def get_max_speed_for_gear(
     # RPM → rad/s → wheel speed → vehicle speed
     max_wheel_omega = spec.rpm_limiter / 9.5493  # RPM to rad/s
     max_wheel_speed = max_wheel_omega / total_ratio  # Account for gear reduction
-    max_vehicle_speed = max_wheel_speed * spec.wheel_radius  # Linear speed
-
-    # ENFORCE ABSOLUTE TOP SPEED LIMIT: No gear can exceed 88 m/s
-    return min(max_vehicle_speed, absolute_top_speed)
+    return max_wheel_speed * spec.wheel_radius  # Linear speed
 
 
-def get_gear_speed_limits(
-    spec: VehicleSpec,
-    absolute_top_speed: float = 88.0,
-) -> np.ndarray:
+def get_gear_speed_limits(spec: VehicleSpec) -> np.ndarray:
     """
     Calculate speed limits for all gears.
 
     Args:
         spec: Vehicle specification
-        absolute_top_speed: Absolute maximum speed limit in m/s
 
     Returns:
         Array of max speeds for each gear [gear1_max, gear2_max, ...]
     """
-    return np.array([get_max_speed_for_gear(spec, gear+1, absolute_top_speed)
+    return np.array([get_max_speed_for_gear(spec, gear+1)
                      for gear in range(len(spec.gear_ratios))])
 
 
@@ -345,7 +333,11 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     wheel_omega = (s.vx / spec.wheel_radius) if v>0.1 else 0.0
     est_rpm = wheel_omega * ratio * 9.5493 # rad/s -> RPM
     rpm = np.clip(est_rpm, 800.0, spec.rpm_limiter)
-    eng_torque = interp_torque(spec.torque_curve, rpm) * throttle
+    # The limiter cuts the engine, not the road speed: it used to rescale the
+    # velocity to 105% of the gear's limit (and 88 m/s overall), which
+    # destroyed kinetic energy while the engine kept its full torque.
+    on_limiter = est_rpm >= spec.rpm_limiter
+    eng_torque = 0.0 if on_limiter else interp_torque(spec.torque_curve, rpm) * throttle
     wheel_torque = eng_torque * ratio * spec.driveline_eff
     Fx_driven = wheel_torque / spec.wheel_radius
 
@@ -446,23 +438,6 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     elif rpm < downshift_rpm and gear > 1:
         new_gear -= 1
 
-    # Gear-based speed limiting (88 m/s absolute cap)
-    current_gear = int(np.clip(new_gear, 1, len(spec.gear_ratios)))
-    max_speed_current_gear = get_max_speed_for_gear(
-        spec, current_gear, absolute_top_speed=88.0,
-    )
-    speed_limit = max_speed_current_gear * 1.05
-    current_speed = np.hypot(vx, vy)
-
-    if current_speed > speed_limit:
-        scale_factor = speed_limit / current_speed
-        vx *= scale_factor
-        vy *= scale_factor
-
-        wheel_omega = (vx / spec.wheel_radius) if current_speed > 0.1 else 0.0
-        ratio = spec.gear_ratios[current_gear-1] * spec.final_drive
-        rpm = np.clip(wheel_omega * ratio * 9.5493, 800.0, spec.rpm_limiter)
-
     # Safety clamps. These are diagnostics, not part of the model: if one
     # engages, the simulation has entered a regime the tire model does not
     # describe. They used to be load-bearing and silent -- full lock at 25 m/s
@@ -493,21 +468,17 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
 
 
-def get_gear_speed_info(
-    spec: VehicleSpec,
-    absolute_top_speed: float = 88.0,
-) -> dict:
+def get_gear_speed_info(spec: VehicleSpec) -> dict:
     """
     Get detailed gear and speed information for vehicle analysis.
 
     Args:
         spec: Vehicle specification
-        absolute_top_speed: Absolute maximum speed limit in m/s
 
     Returns:
         Dictionary with gear speeds, RPM limits, and other drivetrain info
     """
-    speed_limits = get_gear_speed_limits(spec, absolute_top_speed)
+    speed_limits = get_gear_speed_limits(spec)
 
     gear_info = {}
     for gear in range(1, len(spec.gear_ratios) + 1):
@@ -529,10 +500,8 @@ def get_gear_speed_info(
         'rpm_limiter': spec.rpm_limiter,
         'final_drive': spec.final_drive,
         'wheel_radius': spec.wheel_radius,
-        'absolute_top_speed_ms': absolute_top_speed,
-        'absolute_top_speed_kmh': absolute_top_speed * 3.6,
-        'top_speed_ms': min(max(speed_limits), absolute_top_speed),
-        'top_speed_kmh': min(max(speed_limits), absolute_top_speed) * 3.6
+        'top_speed_ms': max(speed_limits),
+        'top_speed_kmh': max(speed_limits) * 3.6
     }
 
 

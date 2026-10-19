@@ -15,6 +15,7 @@ from physics.physics_engine import (
     VehicleSpec,
     VehicleState,
     aero_forces,
+    get_max_speed_for_gear,
     get_max_steering_angle,
     reset_clamp_events,
     step_dynamics,
@@ -256,6 +257,29 @@ def test_steering_limiter_is_continuous_and_monotonic(vehicle_spec: VehicleSpec)
     assert np.all(steps <= 1e-9), "steering limiter is not monotonically decreasing"
     # No jump larger than 1 degree between adjacent 0.1 m/s samples
     assert np.max(np.abs(steps)) < np.radians(1.0), "steering limiter is discontinuous"
+
+
+def test_rev_limiter_cuts_the_engine_not_the_speed(vehicle_spec: VehicleSpec):
+    """Past the limiter the throttle does nothing and only drag slows the car.
+
+    Speed used to be clamped instead: anything past 105% of the current gear's
+    limiter speed was rescaled away, destroying kinetic energy, while the
+    engine kept its full torque at the limiter.
+    """
+    top_gear = len(vehicle_spec.gear_ratios)
+    speed = get_max_speed_for_gear(vehicle_spec, top_gear) + 1.0
+    drag, _ = aero_forces(vehicle_spec, speed)
+    coasting = speed - drag / vehicle_spec.mass * DT
+
+    for gear in (1, top_gear):  # far past the limiter, and just past it
+        for throttle in (0.0, 1.0):
+            after = step_dynamics(
+                vehicle_spec, _state(vx=speed, gear=gear), DT, throttle, 0.0, 0.0
+            )
+            assert after.vx == pytest.approx(coasting), (
+                f"gear {gear}, throttle {throttle}: {after.vx:.3f} m/s "
+                f"instead of {coasting:.3f} m/s from drag alone"
+            )
 
 
 def test_gearbox_does_not_hunt(vehicle_spec: VehicleSpec):
