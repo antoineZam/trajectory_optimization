@@ -42,7 +42,7 @@ powertrain:
   rapports_boite_de_vitesse: [3.154, 2.294, 1.850, 1.526, 1.292, 1.097]
   rapport_pont_final: 3.789       # crown wheel and pinion 1.571 x final drive 2.412
   efficacite_transmission: 0.9
-  repartition_couple_avant: 0.0   # Rear-wheel drive, as the GT3 rules require
+  repartition_couple_avant: 0.0   # Rear-wheel drive, like every GT3, even on 4WD road cars
 
 suspension_tires:
   type_suspension: "Double triangulation"
