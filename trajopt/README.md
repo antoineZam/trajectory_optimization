@@ -128,6 +128,68 @@ terminal et son poids relatif diminue (15 points contre 700 de récompense de
 progression à Spa). C'est `gamma` qu'il faut augmenter pour qu'il porte plus
 loin, pas le barème.
 
+## Modèle véhicule
+
+`physics/physics_engine.py` est un modèle bicyclette plan : deux essieux, et
+pour chacun un seul budget d'adhérence, partagé entre force longitudinale et
+force latérale (cercle de friction). Il représente :
+
+- la **propulsion** : tout le couple va à l'essieu arrière ;
+- le **transfert de charge longitudinal** `m·a·h/L`, avec un pas de retard,
+  le temps que la caisse plonge ;
+- la **sensibilité à la charge** : le μ d'un essieu baisse quand sa charge
+  dépasse sa charge statique (appui aérodynamique, transfert) ;
+- l'**ABS et l'antipatinage** : aucun essieu ne reçoit une demande
+  longitudinale supérieure à son adhérence ;
+- une **boîte** qui engage le rapport donnant le plus de couple à la roue, et
+  un **rupteur** qui coupe le moteur sans toucher à la vitesse.
+
+Il ne représente pas le transfert de charge latéral, l'aéro sensible à
+l'assiette, la dynamique de direction ni le temps de passage des rapports. La
+sensibilité à la charge est donc un paramètre effectif, calé sur des mesures.
+
+### Calibration GT3
+
+La voiture par défaut (`conf/vehicle/default.yaml`) est une GT3 actuelle
+(homologations 2019-2026). Aucune GT3 ne publie son aéro, son centre de
+gravité ni sa courbe de couple : ce qui n'est pas sourcé est estimé, et
+signalé comme tel dans le fichier.
+
+| Grandeur | Valeur | Origine |
+|---|---|---|
+| Masse en course | 1 420 kg | BoP 2025, médiane 1 315 kg [1][2], + pilote 85 kg + 30 l |
+| Empattement, voie | 2,66 m, 1,70 m | médiane de sept GT3 ; Ferrari 296, Huracán EVO2 |
+| Moteur | 4,2 l, ≈ 400 kW, rupteur 9 250 tr/min | Porsche 911 GT3 R (992) [3], ramené au niveau BoP (estim.) |
+| Rapports | 3,154 à 1,097, pont 3,789 | Porsche 911 GT3 R (991.2), seule boîte GT3 publiée [4] |
+| Pneu arrière | rayon en charge 0,35 m | Michelin 31/71-18, Pirelli 325/705-18 |
+| Aéro | SCx 1,1 m², SCz 2,8 m², 40 % avant | SCx : vitesses de pointe [5] ; SCz : 870 kg à 250 km/h pour la 296 Challenge [6] (estim.) |
+| Adhérence | μ0 1,55, −22 % par doublement de charge | freinage Brembo [7], ≈ 1,6 g en virage lent (estim.) |
+| CdG, répartition | 0,40 m, 45/55 | estim. |
+
+`tests/test_gt3_envelope.py` vérifie que la voiture reste dans l'enveloppe
+mesurée :
+
+| Manœuvre | Modèle | Référence |
+|---|---|---|
+| Vitesse de pointe | 292 km/h | 284-304 km/h, LMGT3 au Mans 2024-2026 [5] |
+| 0-200 km/h | 9,0 s | 10,2 s pour la 992 GT3 de route [8] |
+| Freinage à 290 km/h | 2,46 g | 2,0-2,5 g, IMSA GTD 2025 [7] |
+| Virage à 90 km/h | 1,60 g | ≈ 1,6 g (estim.) |
+| Virage à 230 km/h | 1,99 g | 2 à 2,5 g (estim.) |
+
+Le freinage et le virage rapide tirent la sensibilité à la charge en sens
+contraires ; elle est calée sur le freinage, qui est mesuré, et le virage
+rapide sort à la limite basse de son estimation.
+
+1. [SRO, BoP GT World Challenge America, Austin 2025](https://www.gt-world-challenge-america.com/documents/notice/1438/f8ff82bd4e7af413592def5ffa0eb6.pdf)
+2. [FIA, BoP GT3 de la FIA GT World Cup 2025](https://api.fia.com/system/files/documents/2025-11-14_fia_bop_gt3_gtwc_v4_0.pdf)
+3. [Porsche, dossier de presse de la 911 GT3 R (992)](https://newsroom.porsche.com/pdf/74b6d8d9-3614-45c0-b195-81b6bb85aee9)
+4. [Fiche technique de la Porsche 911 GT3 R (991)](https://www.theracersgroup.com/racecars/porsche-911-gt3-r-991/)
+5. [FIA WEC, vitesses de pointe des 24 Heures du Mans 2024](https://fiawec.alkamelsystems.com/Results/13_2024/04_LE%20MANS/541_FIA%20WEC/202406151600_Race/24_Hour%2024/14_BestTopSpeed_Race_Hour%2024.PDF)
+6. [Motor Sport, aéro de la Ferrari 296 Challenge](https://www.motorsportmagazine.com/special-article/race-to-road-ferrari/90/ferrari-296-challenge-how-its-aero-and-electronics-make-690bhp-approachable/)
+7. [Brembo, données de freinage IMSA à Sebring](https://www.brembo.com/en/motorsport/wec/brembo-brake-facts-sebring)
+8. [FastestLaps, Porsche 911 GT3 (992)](https://fastestlaps.com/tests/c5gu9ulf5bum)
+
 ## Structure du projet
 
 ```
