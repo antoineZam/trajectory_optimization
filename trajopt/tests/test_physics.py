@@ -60,6 +60,21 @@ def test_yaw_mode_is_damped_not_divergent(vehicle_spec: VehicleSpec, speed: floa
     )
 
 
+@pytest.mark.parametrize("yaw_rate", [2.0, 5.0, 8.0])
+def test_a_spinning_car_cannot_speed_up(vehicle_spec: VehicleSpec, yaw_rate: float):
+    """Coasting while spinning, the car can only lose speed.
+
+    The vy*r and -vx*r coupling was integrated explicitly, which grows the
+    speed by sqrt(1 + (r*dt)^2) every step: a car spinning at 8 rad/s coasted
+    from 40 m/s up to 56 m/s.
+    """
+    state = _state(vx=40.0, yaw_rate=yaw_rate)
+    for _ in range(20):
+        state = step_dynamics(vehicle_spec, state, DT, 0.0, 0.0, 0.0)
+        speed = float(np.hypot(state.vx, state.vy))
+        assert speed <= 40.0, f"a coasting spin sped up to {speed:.2f} m/s"
+
+
 @pytest.mark.parametrize("steer_deg", [1.0, 2.0, 4.0])
 def test_steady_state_yaw_rate_matches_kinematic_model(
     vehicle_spec: VehicleSpec, steer_deg: float

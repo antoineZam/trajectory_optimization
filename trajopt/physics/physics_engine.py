@@ -438,15 +438,20 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     Fx_long = Fx_front + Fx_rear - np.sign(s.vx) * drag
 
     # Equations of motion (planar bicycle model)
-    ax = (Fx_long - Fy_front * np.sin(steer)) / spec.mass + s.vy * s.yaw_rate
-    ay = (Fy_front * np.cos(steer) + Fy_rear) / spec.mass - s.vx * s.yaw_rate
+    ax = (Fx_long - Fy_front * np.sin(steer)) / spec.mass
+    ay = (Fy_front * np.cos(steer) + Fy_rear) / spec.mass
     yaw_acc = (lf * Fy_front * np.cos(steer) - lr * Fy_rear) / max(spec.moi[2], 1e-3)
 
-    # Semi-implicit Euler: update velocities first, then positions with new velocities
-    vx = s.vx + dt * ax
-    vy = s.vy + dt * ay
+    # Semi-implicit Euler: update velocities first, then positions with new velocities.
+    # The body frame turns over the step, and the velocity is rotated into it
+    # exactly. Integrating the vy*r and -vx*r coupling explicitly, as this used
+    # to, grew the speed by sqrt(1 + (r*dt)^2) every step: a car spinning at
+    # 8 rad/s coasted from 40 m/s up to 56 m/s.
     yaw_rate = s.yaw_rate + dt * yaw_acc
-    yaw = s.yaw + dt * yaw_rate
+    turn = dt * yaw_rate
+    vx, vy = s.vx + dt * ax, s.vy + dt * ay
+    vx, vy = vx * np.cos(turn) + vy * np.sin(turn), vy * np.cos(turn) - vx * np.sin(turn)
+    yaw = s.yaw + turn
     x = s.x + dt * (vx * np.cos(yaw) - vy * np.sin(yaw))
     y = s.y + dt * (vx * np.sin(yaw) + vy * np.cos(yaw))
 
