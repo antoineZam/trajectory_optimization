@@ -34,6 +34,17 @@ def _state(vx: float = 25.0, **kwargs) -> VehicleState:
     return VehicleState(**defaults)
 
 
+def _standing_start(spec: VehicleSpec, steps: int = 20) -> tuple[float, float]:
+    """Full throttle from 5 m/s in 1st: (peak acceleration, final speed)."""
+    state = _state(vx=5.0, gear=1, rpm=1500.0)
+    peak = 0.0
+    for _ in range(steps):
+        after = step_dynamics(spec, state, DT, 1.0, 0.0, 0.0)
+        peak = max(peak, (after.vx - state.vx) / DT)
+        state = after
+    return peak, state.vx
+
+
 # =============================================================================
 # Yaw stability -- regressions for the inverted slip-angle sign
 # =============================================================================
@@ -106,12 +117,14 @@ def test_steady_state_yaw_rate_matches_kinematic_model(
 
     Checks both the sign (steering left must yaw left) and the magnitude. A
     real vehicle understeers slightly, so the ratio is allowed below 1 but not
-    above it.
+    above it. Speed is held, as accelerating transfers load to the rear and
+    adds understeer of its own.
     """
     steer = np.radians(steer_deg)
     state = _state(vx=25.0)
     for _ in range(60):
-        state = step_dynamics(vehicle_spec, state, DT, 0.25, 0.0, steer)
+        throttle = float(np.clip(0.5 * (25.0 - state.vx), 0.0, 1.0))
+        state = step_dynamics(vehicle_spec, state, DT, throttle, 0.0, steer)
 
     speed = float(np.hypot(state.vx, state.vy))
     kinematic = speed / vehicle_spec.wheelbase * np.tan(steer)
@@ -226,23 +239,37 @@ def test_traction_stays_within_the_driven_axle_grip(vehicle_spec: VehicleSpec):
 
     The drive used to follow the mass distribution, an implicit four-wheel
     drive that put 1.0 g on the road from a standstill. The bound counts all
-    the downforce on the rear axle, which only makes it looser.
+    the downforce on the rear axle, which only makes it looser, and the load
+    the acceleration itself transfers there.
     """
-    state = _state(vx=5.0, gear=1, rpm=1500.0)
+    peak_accel, speed = _standing_start(vehicle_spec)
 
-    peak_accel = 0.0
-    for _ in range(20):
-        after = step_dynamics(vehicle_spec, state, DT, 1.0, 0.0, 0.0)
-        peak_accel = max(peak_accel, (after.vx - state.vx) / DT)
-        state = after
-
-    _, downforce = aero_forces(vehicle_spec, state.vx)
-    rear_load = vehicle_spec.mass * GRAVITY * (1.0 - vehicle_spec.mass_split_front) + downforce
+    _, downforce = aero_forces(vehicle_spec, speed)
+    rear_load = (
+        vehicle_spec.mass * GRAVITY * (1.0 - vehicle_spec.mass_split_front)
+        + downforce
+        + vehicle_spec.mass * peak_accel * vehicle_spec.cg[2] / vehicle_spec.wheelbase
+    )
     available = tire_mu(vehicle_spec, rear_load) * rear_load / vehicle_spec.mass
 
     assert peak_accel <= available * 1.05, (
         f"peak {peak_accel / GRAVITY:.2f} g exceeds the {available / GRAVITY:.2f} g "
         f"the rear axle can transmit"
+    )
+
+
+def test_drive_transfers_load_onto_the_rear_axle(vehicle_spec: VehicleSpec):
+    """Accelerating pitches load onto the rear, so a high CG launches harder.
+
+    The CG height sat in the spec unused: no load moved between the axles
+    under braking or drive, and the car launched on its static rear load.
+    """
+    peak, _ = _standing_start(vehicle_spec)
+    peak_grounded, _ = _standing_start(replace(vehicle_spec, cg=np.zeros(3)))
+
+    assert peak > 1.05 * peak_grounded, (
+        f"a {vehicle_spec.cg[2]:.2f} m CG launches at {peak / GRAVITY:.2f} g, "
+        f"no better than one on the ground ({peak_grounded / GRAVITY:.2f} g)"
     )
 
 

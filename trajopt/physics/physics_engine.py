@@ -145,6 +145,7 @@ class VehicleState:
     yaw_rate: float
     gear: int
     rpm: float
+    ax: float = 0.0 # longitudinal acceleration over the last step (m/s^2)
 
 
 def interp_torque(torque_curve: np.ndarray, rpm: float) -> float:
@@ -336,10 +337,20 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     aero_front_share = abs(spec.Cz_front) / max(
         abs(spec.Cz_front) + abs(spec.Cz_rear), 1e-9
     )
-    Fz_front = (spec.mass * 9.81 * spec.mass_split_front) + downforce * aero_front_share
+    # Longitudinal load transfer: the CG sits above the ground, so braking
+    # pitches m * a * h / L onto the front axle and drive onto the rear. It
+    # follows the acceleration of the previous step, as the chassis takes time
+    # to pitch.
+    load_transfer = spec.mass * s.ax * spec.cg[2] / spec.wheelbase
+    Fz_front = (
+        spec.mass * 9.81 * spec.mass_split_front
+        + downforce * aero_front_share
+        - load_transfer
+    )
     Fz_rear = (
         spec.mass * 9.81 * (1.0 - spec.mass_split_front)
         + downforce * (1.0 - aero_front_share)
+        + load_transfer
     )
 
     # Capacité de friction
@@ -492,7 +503,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         CLAMP_EVENTS["non_finite"] += 1
         return s
 
-    return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm)
+    return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm, ax)
 
 
 def get_gear_speed_info(spec: VehicleSpec) -> dict:
