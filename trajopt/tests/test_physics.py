@@ -180,6 +180,31 @@ def test_braking_stays_within_the_available_grip(vehicle_spec: VehicleSpec):
     )
 
 
+def test_traction_stays_within_the_driven_axle_grip(vehicle_spec: VehicleSpec):
+    """A rear-wheel-drive car accelerates on the rear tyres alone.
+
+    The drive used to follow the mass distribution, an implicit four-wheel
+    drive that put 1.0 g on the road from a standstill. The bound counts all
+    the downforce on the rear axle, which only makes it looser.
+    """
+    state = _state(vx=5.0, gear=1, rpm=1500.0)
+
+    peak_accel = 0.0
+    for _ in range(20):
+        after = step_dynamics(vehicle_spec, state, DT, 1.0, 0.0, 0.0)
+        peak_accel = max(peak_accel, (after.vx - state.vx) / DT)
+        state = after
+
+    _, downforce = aero_forces(vehicle_spec, state.vx)
+    rear_load = vehicle_spec.mass * GRAVITY * (1.0 - vehicle_spec.mass_split_front) + downforce
+    available = tire_mu(vehicle_spec, rear_load) * rear_load / vehicle_spec.mass
+
+    assert peak_accel <= available * 1.05, (
+        f"peak {peak_accel / GRAVITY:.2f} g exceeds the {available / GRAVITY:.2f} g "
+        f"the rear axle can transmit"
+    )
+
+
 def test_steering_eats_into_the_braking_budget(vehicle_spec: VehicleSpec):
     """The friction circle: Fx and Fy share one grip budget per axle.
 

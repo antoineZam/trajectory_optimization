@@ -26,7 +26,8 @@
     "limiteur_rpm": 7200,
     "rapports_boite_de_vitesse": [3.6, 2.19, 1.6, 1.29, 1.0, 0.82],
     "rapport_pont_final": 3.42,
-    "efficacite_transmission": 0.9
+    "efficacite_transmission": 0.9,
+    "repartition_couple_avant": 0.0
   },
   "suspension_tires": {
     "type_suspension": "Double triangulation",

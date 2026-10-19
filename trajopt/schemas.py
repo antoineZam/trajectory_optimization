@@ -128,6 +128,9 @@ class PowertrainSchema(BaseModel):
     efficacite_transmission: Annotated[
         float, Field(gt=0, le=1, description="Driveline efficiency (0-1)")
     ]
+    repartition_couple_avant: Annotated[
+        float, Field(ge=0, le=1, description="Front share of drive torque (0 = rear-wheel drive)")
+    ]
 
     @field_validator("courbe_couple_moteur", mode="before")
     @classmethod

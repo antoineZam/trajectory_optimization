@@ -34,6 +34,7 @@ class VehicleSpec:
     gear_ratios: np.ndarray
     final_drive: float
     driveline_eff: float # 0..1
+    drive_split_front: float # front share of drive torque, 0 = rear-wheel drive
     # Tires & suspension (simplified)
     k_spring_front: float
     k_spring_rear: float
@@ -86,6 +87,7 @@ class VehicleSpec:
             gear_ratios=np.array(pw.rapports_boite_de_vitesse, dtype=float),
             final_drive=pw.rapport_pont_final,
             driveline_eff=pw.efficacite_transmission,
+            drive_split_front=pw.repartition_couple_avant,
             k_spring_front=st.raideur_suspension.front,
             k_spring_rear=st.raideur_suspension.rear,
             camber=st.geometrie_pneus.carrossage,
@@ -406,13 +408,14 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # nothing to do with driving.
     #
     # Longitudinal force is split per axle: brakes by their designed bias,
-    # drive torque by mass distribution. The latter is an approximation --
-    # the spec carries no drive-layout parameter -- but it keeps the budget
-    # honest at both ends. Aerodynamic drag acts on the body, not through the
-    # contact patch, so it does not consume tire grip.
-    Fx_front = Fx_driven * spec.mass_split_front + Fx_brake * spec.brake_split_front
+    # drive torque by the drivetrain layout. The drive used to follow the mass
+    # distribution, which made every car a 53/47 four-wheel drive that put
+    # 1.0 g on the road from a standstill; a rear-wheel-drive car has only the
+    # rear axle's grip to accelerate with. Aerodynamic drag acts on the body,
+    # not through the contact patch, so it does not consume tire grip.
+    Fx_front = Fx_driven * spec.drive_split_front + Fx_brake * spec.brake_split_front
     Fx_rear = (
-        Fx_driven * (1.0 - spec.mass_split_front)
+        Fx_driven * (1.0 - spec.drive_split_front)
         + Fx_brake * (1.0 - spec.brake_split_front)
     )
 
