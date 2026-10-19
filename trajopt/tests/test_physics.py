@@ -135,6 +135,36 @@ def test_steady_state_yaw_rate_matches_kinematic_model(
     )
 
 
+@pytest.mark.parametrize("front_share", [0.40, 0.60])
+def test_where_the_mass_sits_does_not_skew_the_balance(
+    vehicle_spec: VehicleSpec, front_share: float
+):
+    """Each axle's tyres are sized for its load, so mass distribution is neutral.
+
+    Load sensitivity was measured from the car's mean axle load, which docked
+    the heavier axle grip for its static load alone: a nose-heavy car
+    understeered, a tail-heavy one oversteered, for no other reason. Aero is
+    removed and the sensitivity exaggerated so that only this effect shows.
+    """
+    steer = np.radians(4.0)
+
+    def yaw_ratio(spec: VehicleSpec) -> float:
+        state = _state(vx=10.0)
+        for _ in range(60):
+            throttle = float(np.clip(0.5 * (10.0 - state.vx), 0.0, 1.0))
+            state = step_dynamics(spec, state, DT, throttle, 0.0, steer)
+        speed = float(np.hypot(state.vx, state.vy))
+        return state.yaw_rate / (speed / spec.wheelbase * np.tan(steer))
+
+    car = replace(vehicle_spec, Cz_front=0.0, Cz_rear=0.0, alpha_muFz=-0.3)
+    balanced = yaw_ratio(replace(car, mass_split_front=0.5))
+    skewed = yaw_ratio(replace(car, mass_split_front=front_share))
+
+    assert skewed == pytest.approx(balanced, rel=0.02), (
+        f"{front_share:.0%} front: yaw ratio {skewed:.3f} against {balanced:.3f} balanced"
+    )
+
+
 def test_lateral_acceleration_stays_within_tire_grip(vehicle_spec: VehicleSpec):
     """Full steering lock must not exceed the tire's lateral capability.
 

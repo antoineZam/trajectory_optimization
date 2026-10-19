@@ -172,15 +172,14 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float | None = None) -> float:
     7539 N axle load changed mu by +0.07% -- the parameter was a no-op with
     the wrong sign.
 
-    The reference load now defaults to the static per-axle load, so mu0 is the
-    grip at nominal load and load sensitivity only appears as the load
-    actually deviates from it (aerodynamic downforce, and weight transfer once
-    that is modelled).
+    The reference load is the axle's static load, so mu0 is the grip at
+    nominal load and load sensitivity only appears as the load actually
+    deviates from it (aerodynamic downforce and weight transfer).
 
     Args:
         spec: Vehicle specification.
         Fz: Vertical load on the axle (N).
-        Fz_ref: Reference load; defaults to the static per-axle load.
+        Fz_ref: The axle's static load; defaults to half the car's weight.
 
     Returns:
         Friction coefficient at that load.
@@ -342,20 +341,17 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     # follows the acceleration of the previous step, as the chassis takes time
     # to pitch.
     load_transfer = spec.mass * s.ax * spec.cg[2] / spec.wheelbase
-    Fz_front = (
-        spec.mass * 9.81 * spec.mass_split_front
-        + downforce * aero_front_share
-        - load_transfer
-    )
-    Fz_rear = (
-        spec.mass * 9.81 * (1.0 - spec.mass_split_front)
-        + downforce * (1.0 - aero_front_share)
-        + load_transfer
-    )
+    static_front = spec.mass * 9.81 * spec.mass_split_front
+    static_rear = spec.mass * 9.81 - static_front
+    Fz_front = static_front + downforce * aero_front_share - load_transfer
+    Fz_rear = static_rear + downforce * (1.0 - aero_front_share) + load_transfer
 
-    # Capacité de friction
-    mu_f = tire_mu(spec, Fz_front)
-    mu_r = tire_mu(spec, Fz_rear)
+    # Capacité de friction. Each axle's tyres are sized for its static load --
+    # a GT3 runs wider rears -- so load sensitivity is measured from there.
+    # Measured from the mean axle load, it docked the heavier axle grip for
+    # its static load alone and skewed the balance towards that end.
+    mu_f = tire_mu(spec, Fz_front, static_front)
+    mu_r = tire_mu(spec, Fz_rear, static_rear)
     Fy_max_front = mu_f * Fz_front
     Fy_max_rear = mu_r * Fz_rear
 
