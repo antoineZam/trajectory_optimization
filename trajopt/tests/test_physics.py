@@ -302,6 +302,23 @@ def test_steering_eats_into_the_braking_budget(vehicle_spec: VehicleSpec):
     )
 
 
+@pytest.mark.parametrize("speed", [15.0, 30.0])
+def test_abs_keeps_the_car_steering_under_full_braking(vehicle_spec: VehicleSpec, speed: float):
+    """Stamping on the brakes must not take the steering away.
+
+    GT3 cars carry ABS and traction control. Without them the brake demand
+    swamped each axle's friction circle: full brakes at 15 m/s cut the yaw
+    response to 3 degrees of steering by a third.
+    """
+    def yaw_response(brake: float) -> float:
+        state = step_dynamics(vehicle_spec, _state(vx=speed), DT, 0.0, brake, np.radians(3.0))
+        return state.yaw_rate
+
+    assert yaw_response(1.0) >= 0.85 * yaw_response(0.0), (
+        f"full brakes leave {yaw_response(1.0) / yaw_response(0.0):.0%} of the steering"
+    )
+
+
 def test_braking_never_reverses_the_vehicle(vehicle_spec: VehicleSpec):
     """Braking must decelerate towards zero, not through it."""
     state = _state(vx=8.0)

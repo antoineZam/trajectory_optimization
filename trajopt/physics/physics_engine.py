@@ -448,6 +448,13 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         + Fx_brake * (1.0 - spec.brake_split_front)
     )
 
+    # ABS and traction control, which every GT3 carries, hold each axle's
+    # longitudinal demand within its grip, mu * Fz. Without them a locked or
+    # spinning wheel swamped the friction circle and took the cornering force
+    # with it: full brakes at 15 m/s cost a third of the steering response.
+    Fx_front = min(max(Fx_front, -Fy_max_front), Fy_max_front)
+    Fx_rear = min(max(Fx_rear, -Fy_max_rear), Fy_max_rear)
+
     Fx_front, Fy_front = _apply_friction_circle(Fx_front, Fy_front, mu_f * Fz_front)
     Fx_rear, Fy_rear = _apply_friction_circle(Fx_rear, Fy_rear, mu_r * Fz_rear)
 
