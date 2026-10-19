@@ -1,36 +1,46 @@
-# Default vehicle specification
-# Based on a typical GT-class racing car
+# Default vehicle specification: a current FIA GT3 car (2019-2026 homologations)
+#
+# Sourced figures are marked with their origin; the rest are estimates, marked
+# "est.". The README lists the sources and the performance this calibration
+# reproduces.
 
 chassis:
-  masse_totale: 1450
-  centre_de_gravite: [0.0, 0.0, 0.45]
-  moment_inertie: [1200.0, 2300.0, 1300.0]
-  coefficient_trainee: 0.34
-  coefficient_portance:
-    front: -1.2
-    rear: -1.8
-  surface_frontale: 2.0
-  repartition_masses:
-    front: 0.53
-    rear: 0.47
-  empattement: 2.65
-  voie: 1.55
-  angle_braquage_max: 0.6
+  masse_totale: 1420              # 2025 BoP median 1315 kg (SRO, FIA) + 85 kg driver + 30 l fuel
+  centre_de_gravite: [0.0, 0.0, 0.40]   # height not published; est. 0.35-0.45 m
+  moment_inertie: [1200.0, 2300.0, 2500.0]  # Iz = m * a * b, a dynamic index of 1
+  coefficient_trainee: 0.55       # CdA 1.1 m²: ~290 km/h on 400 kW, as at Le Mans
+  coefficient_portance:           # ClA 2.8 m², 840 kg at 250 km/h (296 Challenge: 870 kg)
+    front: -0.56                  # 40/60 balance, est.
+    rear: -0.84
+  surface_frontale: 2.0           # ~2.05 m wide by ~1.2 m high
+  repartition_masses:             # not published; est. for a mid or front-mid engine
+    front: 0.45
+    rear: 0.55
+  empattement: 2.66               # median of seven current GT3s, 2.51-2.92 m
+  voie: 1.70                      # Ferrari 296 GT3, Huracán GT3 EVO2: 1.66-1.73 m
+  angle_braquage_max: 0.42        # atan(empattement / rayon_braquage_min)
   facteur_vitesse_braquage: 0.02
   rayon_braquage_min: 6.0
 
 powertrain:
+  # 4.2 l flat-six of the Porsche 911 GT3 R (992), held near the ~400 kW a BoP
+  # allows, with the torque peak of the 4.0 l road engine (470 Nm at 6100 rpm).
+  # The shape between those points is an estimate.
   courbe_couple_moteur:
-    - [1000, 180]
-    - [2000, 250]
-    - [3000, 320]
-    - [4000, 380]
-    - [5000, 420]
-    - [6000, 430]
-    - [7000, 420]
-  limiteur_rpm: 7200
-  rapports_boite_de_vitesse: [3.6, 2.19, 1.6, 1.29, 1.0, 0.82]
-  rapport_pont_final: 3.42
+    - [1000, 300]
+    - [2000, 340]
+    - [3000, 385]
+    - [4000, 425]
+    - [5000, 455]
+    - [6000, 475]
+    - [7000, 470]
+    - [8000, 455]
+    - [8750, 437]
+    - [9250, 410]
+  limiteur_rpm: 9250              # Porsche 911 GT3 R (992)
+  # Porsche 911 GT3 R (991.2), the only published GT3 ratios
+  rapports_boite_de_vitesse: [3.154, 2.294, 1.850, 1.526, 1.292, 1.097]
+  rapport_pont_final: 3.789       # crown wheel and pinion 1.571 x final drive 2.412
   efficacite_transmission: 0.9
   repartition_couple_avant: 0.0   # Rear-wheel drive, as the GT3 rules require
 
@@ -43,13 +53,12 @@ suspension_tires:
     carrossage: -2.0
     pincement: 0.1
   modele_pneu_adherence:
-    mu0: 1.6
-    alpha: -0.08   # Negative: tires lose grip as load rises (~8% per doubling)
-  rayon_roue: 0.33
+    mu0: 1.55     # 1.6 g in slow corners, est. 1.5-1.8 g
+    alpha: -0.22  # mu falls 22% per doubling of load: 2.0-2.5 g braking at speed (Brembo)
+  rayon_roue: 0.35                # rear slick 31/71-18 or 325/705-18, Ø705-710 mm, loaded
 
 brakes:
-  couple_freinage_max: 9000
+  couple_freinage_max: 14000      # enough to bring both axles to ABS at top speed
   repartition_freinage:
     front: 0.65
     rear: 0.35
-
