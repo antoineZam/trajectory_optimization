@@ -483,3 +483,26 @@ def test_wheels_are_counted_once_per_step(track, vehicle_spec, monkeypatch):
         env.step(np.array([0.4, 0.0, 0.05], dtype=np.float32))
 
     assert calls == 15, f"expected one count per step, got {calls}"
+
+
+def test_telemetry_reports_the_real_checkpoint_count(
+    track, vehicle_spec, monkeypatch, tmp_path, capsys
+):
+    """The live line and the episode summary must show the env's own count.
+
+    Both printed a hardcoded /4, which stopped being true once the count
+    followed the lap length.
+    """
+    monkeypatch.chdir(tmp_path)  # RacingTelemetry creates ./telemetry
+    env = RacingEnv(
+        track=track,
+        veh_spec=vehicle_spec,
+        cfg=RLConfig(num_checkpoints=7),
+        enable_telemetry=True,
+    )
+    env.reset(seed=0)
+    env.step(np.array([0.4, 0.0, 0.0], dtype=np.float32))
+
+    assert "CP: 0/7" in capsys.readouterr().out
+    summary = env.telemetry.end_episode(False, "test", "standard")
+    assert summary.max_checkpoints == 7
