@@ -215,7 +215,7 @@ def test_lookahead_points_are_at_the_requested_distances(env: RacingEnv):
 
 
 def test_a_full_lap_awards_all_checkpoints_and_completes(env: RacingEnv):
-    """Driving one full lap must award 4/4 checkpoints and set lap_completed.
+    """Driving one full lap must award max_checkpoints/max_checkpoints checkpoints and set lap_completed.
 
     The reference controller demonstrably drives three clean laps, yet the
     environment reports checkpoints {1, 2, 3} and lap_completed False.

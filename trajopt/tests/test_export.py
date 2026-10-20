@@ -2,7 +2,7 @@
 
 The export loop read its results from the environment *after* the episode
 ended, but DummyVecEnv auto-resets on done, so it was reading the next
-episode's freshly-zeroed state. Every attempt reported 0/4 checkpoints and
+episode's freshly-zeroed state. Every attempt reported 0 checkpoints and
 lap_completed False, `best_trajectory` stayed None, and the file shipped
 anyway with the reset state as its last point.
 """
@@ -58,7 +58,7 @@ def test_episode_results_survive_the_auto_reset():
     assert terminal_info["lap_completed"] is True
     assert terminal_info["checkpoints_hit"] == racing_env.num_checkpoints
 
-    # The env has been auto-reset: reading it here is what produced 0/4.
+    # The env has been auto-reset: reading it here is what produced 0.
     assert racing_env.checkpoints_hit == set()
     assert racing_env.lap_completed is False
 

@@ -213,7 +213,7 @@ class RacingTelemetry:
               f"Steer: {steer_deg:+5.1f}°/{max_steer_deg:4.1f}° | "
               f"Progress: {frame.track_progress*100:5.1f}% | "
               f"Center: {frame.center_distance:4.1f}m | "
-              f"CP: {frame.current_checkpoint}/4 | "
+              f"CP: {frame.current_checkpoint}/{frame.max_checkpoints} | "
               f"Reward: {frame.total_reward:+6.1f}",
               end="", flush=True)
 

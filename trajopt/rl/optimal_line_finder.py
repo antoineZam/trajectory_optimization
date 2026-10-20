@@ -579,7 +579,7 @@ def _export_best_lap(
                 # DummyVecEnv auto-resets on done, so by the time control
                 # returns here racing_env.state, .checkpoints_hit and
                 # .lap_completed already describe the NEXT episode. Reading
-                # them after the loop is why every attempt reported 0/4
+                # them after the loop is why every attempt reported 0
                 # checkpoints and lap_completed False, which made
                 # `checkpoints_hit > best_checkpoints` permanently false,
                 # left best_trajectory as None, and still exported the raw
