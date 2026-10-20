@@ -6,7 +6,7 @@
 
 chassis:
   masse_totale: 1420              # 2025 BoP median 1315 kg (SRO, FIA) + 85 kg driver + 30 l fuel
-  centre_de_gravite: [0.0, 0.0, 0.40]   # height not published; est. 0.35-0.45 m
+  centre_de_gravite: [0.0, 0.0, 0.35]   # height not published; est. 0.35-0.45 m, the low end the cornering needs
   moment_inertie: [1200.0, 2300.0, 2500.0]  # Iz = m * a * b, a dynamic index of 1
   coefficient_trainee: 0.55       # CdA 1.1 m²: ~290 km/h on 400 kW, as at Le Mans
   coefficient_portance:           # ClA 2.8 m², 840 kg at 250 km/h (296 Challenge: 870 kg)
@@ -46,19 +46,21 @@ powertrain:
 
 suspension_tires:
   type_suspension: "Double triangulation"
-  raideur_suspension:
-    front: 35000
+  raideur_suspension:             # wheel rates in roll, anti-roll bars included; only their ratio
+    front: 32000                  # counts, splitting the lateral load transfer 50/50, est.
     rear: 32000
   geometrie_pneus:
     carrossage: -2.0
     pincement: 0.1
   modele_pneu_adherence:
-    mu0: 1.55     # 1.6 g in slow corners, est. 1.5-1.8 g
-    alpha: -0.22  # mu falls 22% per doubling of load: 2.0-2.5 g braking at speed (Brembo)
+    # Together: 2.0-2.5 g braking at speed (Brembo), ~1.6 g in slow corners and
+    # 2 g in fast ones (est.) once the inside tyres unload
+    mu0: 1.95     # at the static load
+    alpha: -0.36  # mu falls 36% per doubling of load; the force holds past 1.9 times it
   rayon_roue: 0.35                # rear slick 31/71-18 or 325/705-18, Ø705-710 mm, loaded
 
 brakes:
-  couple_freinage_max: 14000      # enough to bring both axles to ABS at top speed
+  couple_freinage_max: 14000      # both axles reach ABS up to ~230 km/h; past it the rear runs out of torque
   repartition_freinage:
     front: 0.65
     rear: 0.35

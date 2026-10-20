@@ -146,6 +146,7 @@ class VehicleState:
     gear: int
     rpm: float
     ax: float = 0.0 # longitudinal acceleration over the last step (m/s^2)
+    ay: float = 0.0 # lateral acceleration over the last step (m/s^2)
 
 
 def interp_torque(torque_curve: np.ndarray, rpm: float) -> float:
@@ -196,6 +197,31 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float | None = None) -> float:
         load = min(Fz, Fz_ref * (spec.alpha_muFz - 1.0) / (2.0 * spec.alpha_muFz))
     mu = spec.mu0 * (1.0 + spec.alpha_muFz * (load - Fz_ref) / Fz_ref)
     return mu * load / Fz if load < Fz else mu
+
+
+def axle_grip(spec: VehicleSpec, Fz: float, Fz_static: float, transfer: float) -> float:
+    """Grip of an axle whose load is shifted from its inside tyre to its outside one.
+
+    Each tyre's mu follows its own load. Load sensitivity is negative, so the
+    outside tyre gains less grip than the inside one loses: the more load an
+    axle transfers across, the less it holds.
+
+    Args:
+        spec: Vehicle specification.
+        Fz: Vertical load on the axle (N).
+        Fz_static: The axle's static load (N).
+        transfer: Load moved from the inside tyre onto the outside one (N).
+
+    Returns:
+        The axle's grip, mu * Fz summed over its two tyres (N).
+    """
+    inside = max(0.5 * Fz - abs(transfer), 0.0)  # past this the inside wheel lifts
+    outside = Fz - inside
+    reference = 0.5 * Fz_static
+    return (
+        tire_mu(spec, outside, reference) * outside
+        + tire_mu(spec, inside, reference) * inside
+    )
 
 
 def _apply_friction_circle(
@@ -355,14 +381,24 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     Fz_front = static_front + downforce * aero_front_share - load_transfer
     Fz_rear = static_rear + downforce * (1.0 - aero_front_share) + load_transfer
 
+    # Lateral load transfer: cornering rolls m * ay * h / t onto the outside
+    # tyres. With the roll axis on the ground it all goes through the springs,
+    # so each axle takes its share of the roll stiffness, k * t^2 / 2 on a
+    # common track. Like the pitch, it follows the acceleration of the
+    # previous step, as the body takes time to roll.
+    roll_front_share = spec.k_spring_front / (spec.k_spring_front + spec.k_spring_rear)
+    lateral_transfer = spec.mass * s.ay * spec.cg[2] / spec.track_width
+
     # Capacité de friction. Each axle's tyres are sized for its static load --
     # a GT3 runs wider rears -- so load sensitivity is measured from there.
     # Measured from the mean axle load, it docked the heavier axle grip for
     # its static load alone and skewed the balance towards that end.
-    mu_f = tire_mu(spec, Fz_front, static_front)
-    mu_r = tire_mu(spec, Fz_rear, static_rear)
-    Fy_max_front = mu_f * Fz_front
-    Fy_max_rear = mu_r * Fz_rear
+    Fy_max_front = axle_grip(
+        spec, Fz_front, static_front, lateral_transfer * roll_front_share
+    )
+    Fy_max_rear = axle_grip(
+        spec, Fz_rear, static_rear, lateral_transfer * (1.0 - roll_front_share)
+    )
 
     # Propulsion : estimate wheel speed from gear
     gear = int(np.clip(s.gear, 1, len(spec.gear_ratios)))
@@ -460,8 +496,8 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
     Fx_front = min(max(Fx_front, -Fy_max_front), Fy_max_front)
     Fx_rear = min(max(Fx_rear, -Fy_max_rear), Fy_max_rear)
 
-    Fx_front, Fy_front = _apply_friction_circle(Fx_front, Fy_front, mu_f * Fz_front)
-    Fx_rear, Fy_rear = _apply_friction_circle(Fx_rear, Fy_rear, mu_r * Fz_rear)
+    Fx_front, Fy_front = _apply_friction_circle(Fx_front, Fy_front, Fy_max_front)
+    Fx_rear, Fy_rear = _apply_friction_circle(Fx_rear, Fy_rear, Fy_max_rear)
 
     Fx_long = Fx_front + Fx_rear - np.sign(s.vx) * drag
 
@@ -515,7 +551,7 @@ def step_dynamics(spec: VehicleSpec, s: VehicleState, dt: float,
         CLAMP_EVENTS["non_finite"] += 1
         return s
 
-    return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm, ax)
+    return VehicleState(x, y, yaw, vx, vy, yaw_rate, new_gear, rpm, ax, ay)
 
 
 def get_gear_speed_info(spec: VehicleSpec) -> dict:

@@ -17,6 +17,7 @@ from physics.physics_engine import (
     VehicleSpec,
     VehicleState,
     aero_forces,
+    axle_grip,
     get_max_speed_for_gear,
     get_max_steering_angle,
     reset_clamp_events,
@@ -310,13 +311,92 @@ def test_drive_transfers_load_onto_the_rear_axle(vehicle_spec: VehicleSpec):
 
     The CG height sat in the spec unused: no load moved between the axles
     under braking or drive, and the car launched on its static rear load.
+    The default car's engine, not its rear tyres, limits it from 5 m/s in
+    1st, so the tyres are made to spin first.
     """
-    peak, _ = _standing_start(vehicle_spec)
-    peak_grounded, _ = _standing_start(replace(vehicle_spec, cg=np.zeros(3)))
+    car = replace(vehicle_spec, mu0=1.2)
+    peak, _ = _standing_start(car)
+    peak_grounded, _ = _standing_start(replace(car, cg=np.zeros(3)))
 
     assert peak > 1.05 * peak_grounded, (
-        f"a {vehicle_spec.cg[2]:.2f} m CG launches at {peak / GRAVITY:.2f} g, "
+        f"a {car.cg[2]:.2f} m CG launches at {peak / GRAVITY:.2f} g, "
         f"no better than one on the ground ({peak_grounded / GRAVITY:.2f} g)"
+    )
+
+
+def test_an_axle_holds_less_the_more_load_it_transfers(vehicle_spec: VehicleSpec):
+    """Shifting load from the inside tyre to the outside one costs grip.
+
+    Load sensitivity is negative, so the outside tyre gains less than the
+    inside one loses. Once the inside wheel lifts, no more load can move.
+    """
+    static = vehicle_spec.mass * GRAVITY * vehicle_spec.mass_split_front
+    transfers = np.linspace(0.0, 0.8, 81) * static
+    grip = np.array([axle_grip(vehicle_spec, static, static, t) for t in transfers])
+    lifted = transfers >= 0.5 * static
+
+    assert grip[0] == pytest.approx(vehicle_spec.mu0 * static)
+    assert np.all(np.diff(grip[~lifted]) < 0.0), "transferring load did not cost grip"
+    assert np.allclose(grip[lifted], grip[-1]), "load kept moving after the wheel lifted"
+    assert axle_grip(vehicle_spec, static, static, -0.3 * static) == pytest.approx(
+        axle_grip(vehicle_spec, static, static, 0.3 * static)
+    ), "a left-hander and a right-hander transfer differently"
+
+
+def _cornering_limit(spec: VehicleSpec, speed: float = 25.0) -> float:
+    """Peak lateral acceleration as the steering ramps to full lock, speed held."""
+    state, peak = _state(vx=speed, gear=3), 0.0
+    steps = int(8.0 / DT)
+    for k in range(steps):
+        throttle = float(np.clip(0.5 * (speed - state.vx), 0.0, 1.0))
+        steer = spec.max_steering_angle * k / steps
+        state = step_dynamics(spec, state, DT, throttle, 0.0, steer)
+        peak = max(peak, state.ay)
+    return peak
+
+
+def test_a_high_cg_corners_on_less_grip(vehicle_spec: VehicleSpec):
+    """Cornering rolls load onto the outside tyres, and that costs grip.
+
+    The CG height only pitched the car: each axle cornered on its load split
+    evenly between its two tyres, as if the CG sat on the ground.
+    """
+    limit = _cornering_limit(vehicle_spec)
+    grounded = _cornering_limit(replace(vehicle_spec, cg=np.zeros(3)))
+
+    assert limit < 0.9 * grounded, (
+        f"a {vehicle_spec.cg[2]:.2f} m CG corners at {limit / GRAVITY:.2f} g, "
+        f"against {grounded / GRAVITY:.2f} g on the ground"
+    )
+
+
+def test_the_end_stiffer_in_roll_loses_its_grip_first(vehicle_spec: VehicleSpec):
+    """The axle with more roll stiffness takes more of the transfer.
+
+    A stiffer front therefore understeers and a stiffer rear oversteers,
+    which is how a GT3's balance is set with its anti-roll bars.
+    """
+    steer = np.radians(2.0)
+
+    def yaw_ratio(front_share: float) -> float:
+        spec = replace(
+            vehicle_spec,
+            k_spring_front=vehicle_spec.k_spring_rear * front_share / (1.0 - front_share),
+        )
+        state = _state(vx=25.0)
+        for _ in range(60):
+            throttle = float(np.clip(0.5 * (25.0 - state.vx), 0.0, 1.0))
+            state = step_dynamics(spec, state, DT, throttle, 0.0, steer)
+        speed = float(np.hypot(state.vx, state.vy))
+        return state.yaw_rate / (speed / spec.wheelbase * np.tan(steer))
+
+    stiff_rear, even, stiff_front = (yaw_ratio(share) for share in (0.3, 0.5, 0.7))
+
+    assert stiff_rear > even > stiff_front, (
+        f"yaw ratio {stiff_rear:.3f} stiff rear, {even:.3f} even, {stiff_front:.3f} stiff front"
+    )
+    assert stiff_rear - stiff_front > 0.1, (
+        f"roll stiffness barely moves the balance: {stiff_rear:.3f} to {stiff_front:.3f}"
     )
 
 
