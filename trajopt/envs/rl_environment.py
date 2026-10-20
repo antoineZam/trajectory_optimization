@@ -1143,6 +1143,7 @@ class RacingEnv(gym.Env):
             racing_line_distance=track_state["center_dist"],
             wheels_inside=wheels_inside,
             current_checkpoint=len(self.checkpoints_hit),
+            max_checkpoints=self.num_checkpoints,
             total_reward=reward,
             track_reward=0.0,  # Simplified reward structure
             speed_reward=0.0,

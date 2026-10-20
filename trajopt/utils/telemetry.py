@@ -36,6 +36,7 @@ class TelemetryFrame:
     racing_line_distance: float  # Distance to racing line (m)
     wheels_inside: int  # Number of wheels inside track
     current_checkpoint: int
+    max_checkpoints: int
     # Rewards
     total_reward: float
     track_reward: float
