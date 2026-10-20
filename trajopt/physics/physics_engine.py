@@ -176,6 +176,10 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float | None = None) -> float:
     nominal load and load sensitivity only appears as the load actually
     deviates from it (aerodynamic downforce and weight transfer).
 
+    mu falls linearly with load, so the force mu * Fz peaks at
+    (alpha - 1) / (2 * alpha) times the reference load and used to fall past
+    it: a tyre pressed harder gripped less. Past its peak the force is held.
+
     Args:
         spec: Vehicle specification.
         Fz: Vertical load on the axle (N).
@@ -186,7 +190,12 @@ def tire_mu(spec: VehicleSpec, Fz: float, Fz_ref: float | None = None) -> float:
     """
     if Fz_ref is None:
         Fz_ref = spec.mass * 9.81 / 2.0
-    return spec.mu0 * (1.0 + spec.alpha_muFz * (Fz - Fz_ref) / max(Fz_ref, 1.0))
+    Fz_ref = max(Fz_ref, 1.0)
+    load = Fz
+    if spec.alpha_muFz < 0.0:
+        load = min(Fz, Fz_ref * (spec.alpha_muFz - 1.0) / (2.0 * spec.alpha_muFz))
+    mu = spec.mu0 * (1.0 + spec.alpha_muFz * (load - Fz_ref) / Fz_ref)
+    return mu * load / Fz if load < Fz else mu
 
 
 def _apply_friction_circle(

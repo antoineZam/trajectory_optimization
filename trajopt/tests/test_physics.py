@@ -165,6 +165,23 @@ def test_where_the_mass_sits_does_not_skew_the_balance(
     )
 
 
+def test_more_load_never_means_less_grip(vehicle_spec: VehicleSpec):
+    """A tyre pressed harder grips more, if by less and less.
+
+    mu falls linearly with load, so mu * Fz peaked at (alpha - 1) / (2 * alpha)
+    times the static load and fell past it. The sensitivity is exaggerated so
+    that the peak, 2.17 times the static load, sits inside the sweep.
+    """
+    spec = replace(vehicle_spec, alpha_muFz=-0.3)
+    static = spec.mass * GRAVITY / 2.0
+    loads = np.linspace(0.0, 4.0, 401) * static
+    grip = np.array([tire_mu(spec, Fz, static) * Fz for Fz in loads])
+
+    assert np.all(np.diff(grip) >= -1e-9), (
+        f"grip falls from {grip.max():.0f} N to {grip[-1]:.0f} N at four times the static load"
+    )
+
+
 def test_lateral_acceleration_stays_within_tire_grip(vehicle_spec: VehicleSpec):
     """Full steering lock must not exceed the tire's lateral capability.
 
