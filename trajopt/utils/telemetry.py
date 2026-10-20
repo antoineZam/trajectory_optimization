@@ -172,7 +172,7 @@ class RacingTelemetry:
             lap_completed=lap_completed,
             lap_time=lap_time,
             checkpoints_hit=max(f.current_checkpoint for f in frames) if frames else 0,
-            max_checkpoints=4,  # TODO: Make this configurable
+            max_checkpoints=frames[-1].max_checkpoints,
             average_speed=np.mean(speeds) if speeds else 0.0,
             max_speed=max(speeds) if speeds else 0.0,
             total_distance=total_distance,
